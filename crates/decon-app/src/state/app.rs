@@ -17,7 +17,9 @@ use decon_core::model::event::EventKind;
 use decon_core::model::journal::SessionJournal;
 use decon_core::model::probe::Probe;
 use decon_core::model::scale::{Phase, Response, Scale, ScaleVersion};
-use decon_core::model::session::{Layer, Session, SessionContext, SessionKind, now_iso};
+use decon_core::model::session::{
+    Layer, Session, SessionContext, SessionEndStatus, SessionKind, now_iso,
+};
 use decon_core::model::settings::Language;
 use decon_core::schedule::DaySchedule;
 use rusqlite::Connection;
@@ -47,6 +49,10 @@ pub enum Screen {
     Settings,
 }
 
+/// Интервал стрим-флаша событий живой сессии (S2.5): буфер льётся в БД
+/// не реже, чем раз в 15 с — при краше теряется максимум 15 с событий.
+pub const FLUSH_INTERVAL_MS: u64 = 15_000;
+
 /// Живая сессия: доменная модель + буфер событий + таймер.
 pub struct RunningSession {
     /// Доменная модель.
@@ -59,6 +65,8 @@ pub struct RunningSession {
     pub next_signal_ms: u64,
     /// Интервал сигналов, мс.
     pub signal_interval_ms: u64,
+    /// Следующий стрим-флаш, мс от старта (S2.5).
+    pub next_flush_ms: u64,
 }
 
 impl RunningSession {
@@ -71,6 +79,7 @@ impl RunningSession {
             elapsed_ms: 0,
             next_signal_ms: interval,
             signal_interval_ms: interval,
+            next_flush_ms: FLUSH_INTERVAL_MS,
         }
     }
 
@@ -96,6 +105,18 @@ impl RunningSession {
     /// Событие от кнопки-маркера.
     pub fn mark(&mut self, kind: EventKind) {
         let _ = self.journal.append(self.elapsed_ms as i64, kind);
+    }
+
+    /// Стрим-флаш (S2.5): записать накопленный буфер событий в БД, не
+    /// останавливая сессию. Арена не копится в ОЗУ дольше интервала
+    /// флаша; при краше теряется максимум интервал (а не вся сессия).
+    pub fn flush_now(&mut self, conn: &Connection) -> Result<usize, String> {
+        let repo = EventRepo::new(conn);
+        let n = self.journal.pending();
+        if n > 0 {
+            self.journal.flush(&repo).map_err(|e| e.to_string())?;
+        }
+        Ok(n)
     }
 }
 
@@ -169,8 +190,12 @@ pub struct App {
     pub probe_min_gap: String,
     /// Черновик: интервал сигналов сессии, с.
     pub signal_interval: String,
+    /// Черновик: интервал повтора зондов, мин (S2.5).
+    pub reminder_interval: String,
     /// Где реально лежит ключ (для статуса в настройках).
     pub keyring_backend: KeyringBackend,
+    /// Автозапуск фактически зарегистрирован в ОС (кэш, S2.5).
+    pub autostart_actual: bool,
 }
 
 impl App {
@@ -199,6 +224,8 @@ impl App {
 
         let mut app = App::skeleton(conn, settings, note_crypto);
         app.keyring_backend = keyring_backend;
+        // Recovery-проход (S2.5): висящие после сбоя сессии → interrupted
+        let _ = SessionRepo::new(&app.conn).finalize_dangling(&now_iso());
         // Зонды на сегодня строим сразу (если включены)
         if app.settings.probe.enabled {
             let _ = crate::state::probes_flow::rebuild_today_probes(&mut app);
@@ -242,6 +269,11 @@ impl App {
             probe_count: settings.probe.count.to_string(),
             probe_min_gap: settings.probe.min_gap_minutes.to_string(),
             signal_interval: settings.session.signal_interval_s.to_string(),
+            reminder_interval: settings.residency.reminder_interval_min.to_string(),
+            // Факт из ОС (файл .desktop / ключ HKCU), не черновик настроек;
+            // кэшируется при старте и обновляется кнопкой в настройках —
+            // reg query/проверка файла не выполняется на каждом рендере.
+            autostart_actual: crate::platform::autostart::is_enabled(),
             keyring_backend: KeyringBackend::Memory,
         }
     }
@@ -317,7 +349,48 @@ impl App {
         if delta == 0 {
             return false;
         }
-        r.tick(delta)
+        let fire = r.tick(delta);
+        // Стрим-флаш (S2.5): буфер событий не ждёт stop — льём каждые
+        // FLUSH_INTERVAL_S живой сессии (устойчивость к крашу/сигналу).
+        if elapsed >= r.next_flush_ms {
+            r.next_flush_ms = elapsed + FLUSH_INTERVAL_MS;
+            let _ = r.flush_now(&self.conn);
+        }
+        fire
+    }
+
+    /// Финализировать живую сессию без post-замера (S2.5, graceful
+    /// shutdown). Единый путь для сигналов ОС, выхода из приложения и
+    /// ручного прерывания: событие Pause не пишем (оно про паузу внутри
+    /// практики), флашим журнал, закрываем сессию со статусом.
+    pub fn finalize_running(&mut self, status: SessionEndStatus) -> Result<(), String> {
+        let Some(r) = self.running.as_mut() else {
+            return Ok(());
+        };
+        let duration_s = (r.elapsed_ms / 1000) as i64;
+        r.session.finalize(status, now_iso(), duration_s);
+        let batch = r.journal.take_batch();
+        let sid = r.session.id;
+        (|| -> Result<(), db::DbError> {
+            if !batch.is_empty() {
+                EventRepo::new(&self.conn).insert_batch(&batch)?;
+            }
+            SessionRepo::new(&self.conn).update(&r.session)?;
+            // Чекпоинт: WAL сворачивается, файл БД самодостаточен
+            let _ = self.conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)");
+            Ok(())
+        })()
+        .map_err(|e| e.to_string())?;
+        let _ = sid;
+        self.running = None;
+        self.timer_start = None;
+        Ok(())
+    }
+
+    /// Ручное прерывание сессии пользователем («Прервать сессию»:
+    /// срочно нужно бежать / плохое самочувствие).
+    pub fn abort_session(&mut self) -> Result<(), String> {
+        self.finalize_running(SessionEndStatus::Aborted)
     }
 
     /// Остановить практику: завершить модель, flush событий, перейти к

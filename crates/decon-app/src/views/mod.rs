@@ -12,6 +12,7 @@ pub mod widgets;
 
 use crate::i18n::{I18n, Str};
 use crate::state::app::{App, Screen};
+use decon_core::model::session::SessionEndStatus;
 use dioxus::prelude::*;
 
 /// CSS приложения: тёмная спокойная тема, крупные кнопки-маркеры.
@@ -158,28 +159,77 @@ fn app_shell() -> Element {
     let lang = state.read().app.lang();
     let i18n = I18n::new(lang);
 
-    // Фоновый цикл зондов: раз в минуту проверяем «пора показать».
-    // Десктоп-ограничение (ARCHITECTURE.md §5): зонды живут, пока
-    // приложение запущено. Уведомление ОС дублирует открытие экрана
-    // (если окна не видно — пользователь узнает из тоста системы).
+    // Трей (S2.5): меню «Открыть / Выход», регистрируется один раз.
+    use_tray();
+
+    // Резидентный старт (S2.5): настройка «не показывать окно при старте»
+    // — прячем окно первым тиком (настройка из БД читается в boot, окно
+    // уже создано). Флаг CLI --hidden обрабатывается в main.rs напрямую.
+    let hide_on_start = !state.read().app.settings.residency.show_window_on_start;
+    use_hook(move || {
+        if hide_on_start {
+            dioxus::desktop::window().window.set_visible(false);
+        }
+    });
+
+    // Фоновый цикл (S2.5): раз в 10 с — зонды, повторы-«будильники»,
+    // сигналы ОС, стрим-флаш. Тик без кражи фокуса: окно не показываем,
+    // только уведомление ОС + звук; окно открывает пользователь из трея.
     use_future(move || async move {
         loop {
-            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
             let mut s = state.write();
-            if s.app.settings.probe.enabled && !matches!(s.app.screen, Screen::Probe(_)) {
-                let due = crate::state::probes_flow::due_probes(&s.app);
+            let app = &mut s.app;
+
+            // Сигнал ОС / выход: финализируем сессию честно и уходим
+            if crate::platform::tray::shutdown_requested() {
+                let _ = app.finalize_running(SessionEndStatus::Interrupted);
+                crate::platform::tray::clear_shutdown_flag();
+                std::process::exit(0);
+            }
+
+            // Тик живой сессии (таймер/сигналы/стрим-флаш) — работает и
+            // при скрытом окне: сессия живёт в состоянии, не в окне.
+            if app.screen == Screen::Running {
+                let _ = app.tick_running();
+            } else if app.running.is_some() {
+                // Окно скрыли/закрыли во время сессии — сессия идёт
+                let _ = app.tick_running();
+            }
+
+            // Зонды: показать due (уведомление + звук, окно не трогаем)
+            if app.settings.probe.enabled && !matches!(app.screen, Screen::Probe(_)) {
+                let due = crate::state::probes_flow::due_probes(app);
                 if let Some(first) = due.first() {
                     let id = first.id;
-                    let res = crate::state::probes_flow::open_probe(&mut s.app, id);
-                    if res.is_ok() {
+                    let res = crate::state::probes_flow::fire_probe_without_focus(app, id);
+                    match res {
+                        Ok(true) => {
+                            crate::platform::notify::notify_probe(
+                                app.i18n.get(Str::AppTitle),
+                                app.i18n.get(Str::ProbeTitle),
+                            );
+                            play_alert_sound(app);
+                        }
+                        Ok(false) => {}
+                        Err(e) => s.error = Some(e),
+                    }
+                } else {
+                    // Повторы-«будильники»: fired без ответа дольше N мин —
+                    // снова уведомление + звук (метка уже в last_reminder_at)
+                    let reminded = crate::state::probes_flow::remind_stale_probes(app).unwrap_or(0);
+                    if reminded > 0 {
                         crate::platform::notify::notify_probe(
-                            s.app.i18n.get(Str::AppTitle),
-                            s.app.i18n.get(Str::ProbeTitle),
+                            app.i18n.get(Str::AppTitle),
+                            app.i18n.get(Str::ProbeTitle),
                         );
-                    } else if let Err(e) = res {
-                        s.error = Some(e);
+                        play_alert_sound(app);
                     }
                 }
+            } else if app.settings.probe.enabled {
+                // Зонд открыт на экране — повторов не нужно, но expire
+                // прошлых дней живёт (recovery-чистка без оповещений)
+                let _ = crate::state::probes_flow::expire_old_probes(app);
             }
         }
     });
@@ -218,6 +268,51 @@ fn app_shell() -> Element {
             }
         }
     }
+}
+
+/// Проиграть звук оповещения по настройке пользователя (S2.5).
+fn play_alert_sound(app: &crate::state::app::App) {
+    use decon_core::model::settings::SoundChoice;
+    match app.settings.residency.sound {
+        SoundChoice::Off => {}
+        SoundChoice::Chime => crate::platform::sound::play(crate::platform::sound::Sound::Chime),
+        SoundChoice::Bell => crate::platform::sound::play(crate::platform::sound::Sound::Bell),
+    }
+}
+
+/// Трей: меню «Открыть / Выход» (S2.5). Регистрируется один раз на
+/// монтировании app_shell (use_hook), не на каждом рендере — иначе
+/// плодятся дубли иконки и обработчиков; события меню — здесь же.
+fn use_tray() {
+    use_hook(|| {
+        use dioxus::desktop::muda::accelerator::Accelerator;
+        use dioxus::desktop::trayicon::init_tray_icon;
+        use dioxus::desktop::use_tray_menu_event_handler;
+        use tray_icon::menu::{Menu, MenuEvent, MenuItem};
+
+        // Меню: Открыть / Выход. MenuId сравнивается с &str напрямую.
+        let open = MenuItem::with_id("open", "Открыть Decon", true, None::<Accelerator>);
+        let quit = MenuItem::with_id("quit", "Выход", true, None::<Accelerator>);
+        let menu = Menu::new();
+        let _ = menu.append_items(&[&open, &quit]);
+        let _ = init_tray_icon(menu, crate::platform::tray::tray_icon_rgba().ok());
+
+        // Копия Signal для обработчика: state переживает кадры.
+        let mut state = use_context::<Signal<AppState>>();
+        use_tray_menu_event_handler(move |event: &MenuEvent| {
+            if event.id == "open" {
+                let desktop = dioxus::desktop::window();
+                desktop.window.set_visible(true);
+                desktop.window.set_focus();
+            } else if event.id == "quit" {
+                // Graceful shutdown: живая сессия финализируется честно
+                // (end_status=interrupted, flush, checkpoint), затем выход.
+                let mut s = state.write();
+                let _ = s.app.finalize_running(SessionEndStatus::Interrupted);
+                std::process::exit(0);
+            }
+        });
+    });
 }
 
 /// Кнопка навигации.

@@ -46,7 +46,7 @@ impl<'a> SettingsRepo<'a> {
         fn json(v: &impl serde::Serialize) -> Result<String, DbError> {
             serde_json::to_string(v).map_err(|e| DbError::Parse(e.to_string()))
         }
-        let pairs: [(&str, String); 8] = [
+        let pairs: [(&str, String); 12] = [
             (k::PROBE_ENABLED, json(&s.probe.enabled)?),
             (
                 k::PROBE_WINDOW_START,
@@ -64,6 +64,16 @@ impl<'a> SettingsRepo<'a> {
             (
                 k::SESSION_SIGNAL_INTERVAL,
                 s.session.signal_interval_s.to_string(),
+            ),
+            (k::RESIDENCY_AUTOSTART, json(&s.residency.autostart)?),
+            (k::RESIDENCY_SOUND, s.residency.sound.as_code().to_string()),
+            (
+                k::RESIDENCY_REMINDER,
+                s.residency.reminder_interval_min.to_string(),
+            ),
+            (
+                k::RESIDENCY_SHOW_WINDOW,
+                json(&s.residency.show_window_on_start)?,
             ),
             (k::CRYPTO_MODE, json(&s.crypto.mode)?),
             (k::I18N_LANG, json(&s.language)?),
@@ -90,6 +100,7 @@ impl<'a> SettingsRepo<'a> {
 
     /// Разбор карты «ключ → JSON» в типизированные настройки.
     fn parse(raw: std::collections::HashMap<String, String>) -> AppSettings {
+        use crate::model::settings::SoundChoice;
         use crate::model::settings::keys as k;
         let mut s = AppSettings::default();
         let get = |key: &str| -> Option<&String> { raw.get(key) };
@@ -128,6 +139,26 @@ impl<'a> SettingsRepo<'a> {
                 if n > 0 {
                     s.session.signal_interval_s = n;
                 }
+            }
+        }
+        if let Some(v) = get(k::RESIDENCY_AUTOSTART) {
+            if let Ok(b) = serde_json::from_str::<bool>(v) {
+                s.residency.autostart = b;
+            }
+        }
+        if let Some(v) = get(k::RESIDENCY_SOUND) {
+            if let Some(c) = SoundChoice::from_code(v) {
+                s.residency.sound = c;
+            }
+        }
+        if let Some(v) = get(k::RESIDENCY_REMINDER) {
+            if let Ok(n) = v.parse::<u16>() {
+                s.residency.reminder_interval_min = n;
+            }
+        }
+        if let Some(v) = get(k::RESIDENCY_SHOW_WINDOW) {
+            if let Ok(b) = serde_json::from_str::<bool>(v) {
+                s.residency.show_window_on_start = b;
             }
         }
         if let Some(v) = get(k::CRYPTO_MODE) {

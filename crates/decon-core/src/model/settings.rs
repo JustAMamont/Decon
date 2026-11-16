@@ -71,6 +71,68 @@ impl Default for SessionSettings {
     }
 }
 
+/// Звук оповещения (зонды, сигналы, напоминания) — S2.5.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SoundChoice {
+    /// Без звука (только визуальное уведомление).
+    Off,
+    /// Мягкий перезвон chime.
+    Chime,
+    /// Колокол bell.
+    Bell,
+}
+
+impl SoundChoice {
+    /// Код для `settings` (`ui.sound`).
+    pub const fn as_code(self) -> &'static str {
+        match self {
+            SoundChoice::Off => "off",
+            SoundChoice::Chime => "chime",
+            SoundChoice::Bell => "bell",
+        }
+    }
+
+    /// Из кода настройки.
+    pub fn from_code(code: &str) -> Option<Self> {
+        match code {
+            "off" => Some(SoundChoice::Off),
+            "chime" => Some(SoundChoice::Chime),
+            "bell" => Some(SoundChoice::Bell),
+            _ => None,
+        }
+    }
+
+    /// Звук включён (не Off).
+    pub const fn is_on(self) -> bool {
+        !matches!(self, SoundChoice::Off)
+    }
+}
+
+/// Резидентный режим (S2.5): трей, автозапуск, звуки, повторы зондов.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResidencySettings {
+    /// Запускаться вместе с системой (XDG autostart / HKCU Run).
+    pub autostart: bool,
+    /// Звук оповещений.
+    pub sound: SoundChoice,
+    /// Интервал повтора-«будильника» неотвеченного зонда, мин (0 — выкл).
+    pub reminder_interval_min: u16,
+    /// Показывать окно при запуске приложения (false — старт сразу в трей).
+    pub show_window_on_start: bool,
+}
+
+impl Default for ResidencySettings {
+    fn default() -> Self {
+        ResidencySettings {
+            autostart: false,
+            sound: SoundChoice::Chime,
+            reminder_interval_min: 15,
+            show_window_on_start: true,
+        }
+    }
+}
+
 /// Режим хранения мастер-ключа шифрования (SPEC §7).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -133,6 +195,8 @@ pub struct AppSettings {
     pub probe: ProbeSettings,
     /// Параметры сессии.
     pub session: SessionSettings,
+    /// Резидентный режим (S2.5).
+    pub residency: ResidencySettings,
     /// Шифрование.
     pub crypto: CryptoSettings,
     /// Язык интерфейса.
@@ -144,6 +208,7 @@ impl Default for AppSettings {
         AppSettings {
             probe: ProbeSettings::default(),
             session: SessionSettings::default(),
+            residency: ResidencySettings::default(),
             crypto: CryptoSettings::default(),
             language: Language::Ru,
         }
@@ -164,6 +229,14 @@ pub mod keys {
     pub const PROBE_MIN_GAP: &str = "probe.min_gap_minutes";
     /// Сессия: интервал равномерных сигналов, с.
     pub const SESSION_SIGNAL_INTERVAL: &str = "session.signal_interval_s";
+    /// Резидентный режим: автозапуск с системой.
+    pub const RESIDENCY_AUTOSTART: &str = "residency.autostart";
+    /// Резидентный режим: звук оповещений (`off`/`chime`/`bell`).
+    pub const RESIDENCY_SOUND: &str = "residency.sound";
+    /// Резидентный режим: интервал повтора зондов, мин (0 — выкл).
+    pub const RESIDENCY_REMINDER: &str = "residency.reminder_interval_min";
+    /// Резидентный режим: показывать окно при старте.
+    pub const RESIDENCY_SHOW_WINDOW: &str = "residency.show_window_on_start";
     /// Шифрование: режим ключа.
     pub const CRYPTO_MODE: &str = "crypto.mode";
     /// Язык интерфейса.

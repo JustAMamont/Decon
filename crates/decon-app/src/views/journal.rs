@@ -180,6 +180,22 @@ pub fn running_screen() -> Element {
                     },
                     {i18n.get(Str::Stop)}
                 }
+                // S2.5: ручное прерывание (срочно бежать/плохо себя
+                // чувствует) — сессия закрывается честно с end_status=aborted
+                button {
+                    onclick: move |_| {
+                        let res = state.write().app.abort_session();
+                        if let Err(e) = res {
+                            state.write().error = Some(e);
+                        } else {
+                            let mut s = state.write();
+                            s.app.toast =
+                                Some(s.app.i18n.get(Str::SessionInterrupted).to_string());
+                            s.app.screen = Screen::Setup;
+                        }
+                    },
+                    {i18n.get(Str::CancelSession)}
+                }
             }
         }
     }

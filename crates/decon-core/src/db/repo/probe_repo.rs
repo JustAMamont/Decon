@@ -33,8 +33,8 @@ impl<'a> ProbeRepo<'a> {
             let mut stmt = tx
                 .prepare(
                     "INSERT INTO probes (id, scheduled_at, fired_at, answered_at,
-                     delay_minutes, window_state, updated_at)
-                     VALUES (?1,?2,?3,?4,?5,?6,?7)",
+                     delay_minutes, last_reminder_at, window_state, updated_at)
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
                 )
                 .map_err(|e| DbError::Sqlite(e.to_string()))?;
             for p in probes {
@@ -44,6 +44,7 @@ impl<'a> ProbeRepo<'a> {
                     p.fired_at,
                     p.answered_at,
                     p.delay_minutes,
+                    p.last_reminder_at,
                     p.state.as_code(),
                     p.scheduled_at,
                 ])
@@ -58,7 +59,8 @@ impl<'a> ProbeRepo<'a> {
     pub fn get(&self, id: &Uuid) -> Result<Option<Probe>, DbError> {
         self.conn
             .query_row(
-                "SELECT id, scheduled_at, fired_at, answered_at, delay_minutes, window_state
+                "SELECT id, scheduled_at, fired_at, answered_at, delay_minutes,
+                 last_reminder_at, window_state
                  FROM probes WHERE id = ?1",
                 [id.to_string()],
                 |row| {
@@ -74,10 +76,11 @@ impl<'a> ProbeRepo<'a> {
                         fired_at: row.get(2)?,
                         answered_at: row.get(3)?,
                         delay_minutes: row.get(4)?,
-                        state: ProbeState::from_code(&row.get::<_, String>(5)?).ok_or_else(
+                        last_reminder_at: row.get(5)?,
+                        state: ProbeState::from_code(&row.get::<_, String>(6)?).ok_or_else(
                             || {
                                 rusqlite::Error::FromSqlConversionFailure(
-                                    5,
+                                    6,
                                     rusqlite::types::Type::Text,
                                     "bad state".into(),
                                 )
@@ -95,13 +98,15 @@ impl<'a> ProbeRepo<'a> {
         self.conn
             .execute(
                 "UPDATE probes SET fired_at=?2, answered_at=?3, delay_minutes=?4,
-                 window_state=?5, updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
+                 last_reminder_at=?5, window_state=?6,
+                 updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')
                  WHERE id=?1",
                 params![
                     probe.id.to_string(),
                     probe.fired_at,
                     probe.answered_at,
                     probe.delay_minutes,
+                    probe.last_reminder_at,
                     probe.state.as_code(),
                 ],
             )
@@ -112,7 +117,8 @@ impl<'a> ProbeRepo<'a> {
     /// Зонды, которые пора показать: scheduled и плановое время ≤ `now`.
     pub fn due(&self, now: &str) -> Result<Vec<Probe>, DbError> {
         self.list_by(
-            "SELECT id, scheduled_at, fired_at, answered_at, delay_minutes, window_state
+            "SELECT id, scheduled_at, fired_at, answered_at, delay_minutes,
+             last_reminder_at, window_state
              FROM probes WHERE window_state = 'scheduled' AND scheduled_at <= ?1
              ORDER BY scheduled_at",
             [now],
@@ -122,7 +128,8 @@ impl<'a> ProbeRepo<'a> {
     /// Догоняющий список: показанные, но неотвеченные (`fired`).
     pub fn catchable(&self) -> Result<Vec<Probe>, DbError> {
         self.list_by(
-            "SELECT id, scheduled_at, fired_at, answered_at, delay_minutes, window_state
+            "SELECT id, scheduled_at, fired_at, answered_at, delay_minutes,
+             last_reminder_at, window_state
              FROM probes WHERE window_state = 'fired'
              ORDER BY scheduled_at DESC",
             [],
@@ -132,7 +139,8 @@ impl<'a> ProbeRepo<'a> {
     /// Зонды дня по префиксу даты планового времени (`YYYY-MM-DD`).
     pub fn list_day(&self, date_prefix: &str) -> Result<Vec<Probe>, DbError> {
         self.list_by(
-            "SELECT id, scheduled_at, fired_at, answered_at, delay_minutes, window_state
+            "SELECT id, scheduled_at, fired_at, answered_at, delay_minutes,
+             last_reminder_at, window_state
              FROM probes WHERE scheduled_at LIKE ?1 || '%'
              ORDER BY scheduled_at",
             [date_prefix],
@@ -159,9 +167,10 @@ impl<'a> ProbeRepo<'a> {
                     fired_at: row.get(2)?,
                     answered_at: row.get(3)?,
                     delay_minutes: row.get(4)?,
-                    state: ProbeState::from_code(&row.get::<_, String>(5)?).ok_or_else(|| {
+                    last_reminder_at: row.get(5)?,
+                    state: ProbeState::from_code(&row.get::<_, String>(6)?).ok_or_else(|| {
                         rusqlite::Error::FromSqlConversionFailure(
-                            5,
+                            6,
                             rusqlite::types::Type::Text,
                             "bad state".into(),
                         )

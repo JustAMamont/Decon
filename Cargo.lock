@@ -941,14 +941,15 @@ name = "decon-app"
 version = "0.1.0"
 dependencies = [
  "decon-core",
- "decon-trainers",
  "dioxus",
  "keyring",
  "notify-rust",
  "rusqlite",
  "serde_json",
+ "signal-hook",
  "tempfile",
  "tokio",
+ "tray-icon",
  "uuid",
 ]
 

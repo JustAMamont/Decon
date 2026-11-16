@@ -140,6 +140,27 @@ pub enum Str {
     KeyringOs,
     /// «память (нет сервиса)»
     KeyringMemory,
+    // --- S2.5: резидентный режим
+    /// «Резидентный режим»
+    ResidencyTitle,
+    /// «Запускаться вместе с системой»
+    Autostart,
+    /// «Звук оповещений»
+    SoundSetting,
+    /// «Без звука»
+    SoundOff,
+    /// «Перезвон»
+    SoundChime,
+    /// «Колокол»
+    SoundBell,
+    /// «Интервал повтора зондов, мин (0 — выкл)»
+    ReminderInterval,
+    /// «Показывать окно при запуске»
+    ShowWindowOnStart,
+    /// «Тест звука»
+    TestSound,
+    /// «Сессия прервана (данные сохранены)»
+    SessionInterrupted,
 }
 
 impl I18n {
@@ -219,6 +240,16 @@ impl I18n {
             Str::KeyringStatus => "Хранилище ключа",
             Str::KeyringOs => "системный keyring",
             Str::KeyringMemory => "память (нет сервиса)",
+            Str::ResidencyTitle => "Резидентный режим",
+            Str::Autostart => "Запускаться вместе с системой",
+            Str::SoundSetting => "Звук оповещений",
+            Str::SoundOff => "Без звука",
+            Str::SoundChime => "Перезвон",
+            Str::SoundBell => "Колокол",
+            Str::ReminderInterval => "Интервал повтора зондов, мин (0 — выкл)",
+            Str::ShowWindowOnStart => "Показывать окно при запуске",
+            Str::TestSound => "Тест звука",
+            Str::SessionInterrupted => "Сессия прервана (данные сохранены)",
         }
     }
 
@@ -287,6 +318,16 @@ impl I18n {
             Str::KeyringStatus => "Key storage",
             Str::KeyringOs => "system keyring",
             Str::KeyringMemory => "memory (no service)",
+            Str::ResidencyTitle => "Resident mode",
+            Str::Autostart => "Start with the system",
+            Str::SoundSetting => "Alert sound",
+            Str::SoundOff => "Silent",
+            Str::SoundChime => "Chime",
+            Str::SoundBell => "Bell",
+            Str::ReminderInterval => "Probe reminder interval, min (0 — off)",
+            Str::ShowWindowOnStart => "Show window on launch",
+            Str::TestSound => "Test sound",
+            Str::SessionInterrupted => "Session interrupted (data saved)",
         }
     }
 }

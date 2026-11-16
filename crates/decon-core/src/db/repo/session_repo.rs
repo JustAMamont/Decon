@@ -36,9 +36,9 @@ impl<'a> SessionRepo<'a> {
         let note_enc = self.encrypt_note(s.note.as_deref())?;
         self.conn.execute(
             "INSERT INTO sessions (id, kind, layer, technique, started_at, ended_at,
-             duration_s, local_time_bucket, sleep_hours, caffeine, posture, note_enc,
-             updated_at, deleted_at)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+             duration_s, end_status, local_time_bucket, sleep_hours, caffeine, posture,
+             note_enc, updated_at, deleted_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
             params![
                 s.id.to_string(),
                 kind_code(s.kind()),
@@ -47,6 +47,7 @@ impl<'a> SessionRepo<'a> {
                 s.started_at(),
                 s.ended_at(),
                 s.duration_s(),
+                s.end_status().map(|st| st.as_code()),
                 s.local_time_bucket().map(|b| b.as_code()),
                 s.context.sleep_hours,
                 s.context.caffeine,
@@ -65,7 +66,7 @@ impl<'a> SessionRepo<'a> {
             .conn
             .query_row(
                 "SELECT id, kind, layer, technique, started_at, ended_at, duration_s,
-                 local_time_bucket, sleep_hours, caffeine, posture, note_enc,
+                 end_status, local_time_bucket, sleep_hours, caffeine, posture, note_enc,
                  updated_at, deleted_at
                  FROM sessions WHERE id = ?1",
                 [id.to_string()],
@@ -78,13 +79,14 @@ impl<'a> SessionRepo<'a> {
                         started_at: row.get(4)?,
                         ended_at: row.get(5)?,
                         duration_s: row.get(6)?,
-                        bucket: row.get(7)?,
-                        sleep_hours: row.get(8)?,
-                        caffeine: row.get(9)?,
-                        posture: row.get(10)?,
-                        note_enc: row.get(11)?,
-                        updated_at: row.get(12)?,
-                        deleted_at: row.get(13)?,
+                        end_status: row.get(7)?,
+                        bucket: row.get(8)?,
+                        sleep_hours: row.get(9)?,
+                        caffeine: row.get(10)?,
+                        posture: row.get(11)?,
+                        note_enc: row.get(12)?,
+                        updated_at: row.get(13)?,
+                        deleted_at: row.get(14)?,
                     })
                 },
             )
@@ -95,11 +97,57 @@ impl<'a> SessionRepo<'a> {
         }
     }
 
+    /// Recovery-проход (S2.5): все сессии без `ended_at` (краш/сигнал мимо
+    /// обработчика) финализируются как `interrupted`. `duration_s`
+    /// считается от `started_at` до `ended_at` обеих меток ISO-8601 UTC
+    /// (расчёт через `unix_ms_from_iso` — без парсинга в SQL).
+    ///
+    /// Возвращает число закрытых сессий. Идемпотентно: повторный вызов на
+    /// здоровой базе — 0.
+    pub fn finalize_dangling(&self, ended_at: &str) -> Result<usize, DbError> {
+        let dangling: Vec<(String, String)> = {
+            let mut stmt = self
+                .conn
+                .prepare("SELECT id, started_at FROM sessions WHERE ended_at IS NULL")?;
+            let rows = stmt.query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })?;
+            let mut out = Vec::new();
+            for r in rows {
+                out.push(r?);
+            }
+            out
+        };
+        if dangling.is_empty() {
+            return Ok(0);
+        }
+        let tx = self.conn.unchecked_transaction()?;
+        {
+            let mut stmt = tx.prepare(
+                "UPDATE sessions SET ended_at = ?2, duration_s = ?3,
+                 end_status = 'interrupted',
+                 updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+                 WHERE id = ?1",
+            )?;
+            for (id, started_at) in &dangling {
+                let duration_s = crate::model::session::unix_ms_from_iso(started_at)
+                    .and_then(|start_ms| {
+                        crate::model::session::unix_ms_from_iso(ended_at)
+                            .map(|end_ms| (end_ms - start_ms) / 1000)
+                    })
+                    .unwrap_or(0);
+                stmt.execute(params![id, ended_at, duration_s])?;
+            }
+        }
+        tx.commit()?;
+        Ok(dangling.len())
+    }
+
     /// Список живых сессий по убыванию даты начала (история журнала).
     pub fn list_recent(&self, limit: u32) -> Result<Vec<Session>, DbError> {
         let mut stmt = self.conn.prepare(
             "SELECT id, kind, layer, technique, started_at, ended_at, duration_s,
-             local_time_bucket, sleep_hours, caffeine, posture, note_enc,
+             end_status, local_time_bucket, sleep_hours, caffeine, posture, note_enc,
              updated_at, deleted_at
              FROM sessions WHERE deleted_at IS NULL
              ORDER BY started_at DESC LIMIT ?1",
@@ -113,13 +161,14 @@ impl<'a> SessionRepo<'a> {
                 started_at: row.get(4)?,
                 ended_at: row.get(5)?,
                 duration_s: row.get(6)?,
-                bucket: row.get(7)?,
-                sleep_hours: row.get(8)?,
-                caffeine: row.get(9)?,
-                posture: row.get(10)?,
-                note_enc: row.get(11)?,
-                updated_at: row.get(12)?,
-                deleted_at: row.get(13)?,
+                end_status: row.get(7)?,
+                bucket: row.get(8)?,
+                sleep_hours: row.get(9)?,
+                caffeine: row.get(10)?,
+                posture: row.get(11)?,
+                note_enc: row.get(12)?,
+                updated_at: row.get(13)?,
+                deleted_at: row.get(14)?,
             })
         })?;
         let mut out = Vec::new();
@@ -135,8 +184,9 @@ impl<'a> SessionRepo<'a> {
         let note_enc = self.encrypt_note(s.note.as_deref())?;
         self.conn.execute(
             "UPDATE sessions SET kind=?2, layer=?3, technique=?4, started_at=?5,
-             ended_at=?6, duration_s=?7, local_time_bucket=?8, sleep_hours=?9,
-             caffeine=?10, posture=?11, note_enc=?12, updated_at=?13, deleted_at=?14
+             ended_at=?6, duration_s=?7, end_status=?8, local_time_bucket=?9,
+             sleep_hours=?10, caffeine=?11, posture=?12, note_enc=?13,
+             updated_at=?14, deleted_at=?15
              WHERE id=?1",
             params![
                 s.id.to_string(),
@@ -146,6 +196,7 @@ impl<'a> SessionRepo<'a> {
                 s.started_at(),
                 s.ended_at(),
                 s.duration_s(),
+                s.end_status().map(|st| st.as_code()),
                 s.local_time_bucket().map(|b| b.as_code()),
                 s.context.sleep_hours,
                 s.context.caffeine,
@@ -169,6 +220,10 @@ impl<'a> SessionRepo<'a> {
             .as_deref()
             .and_then(crate::model::session::Layer::from_code);
         let bucket = r.bucket.as_deref().and_then(LocalTimeBucket::from_code);
+        let end_status = r
+            .end_status
+            .as_deref()
+            .and_then(crate::model::session::SessionEndStatus::from_code);
         let note = match r.note_enc {
             None => Ok(None),
             Some(token) => match self.cryptor {
@@ -187,6 +242,7 @@ impl<'a> SessionRepo<'a> {
             r.started_at,
             r.ended_at,
             r.duration_s,
+            end_status,
             bucket,
             crate::model::session::SessionContext {
                 sleep_hours: r.sleep_hours,
@@ -220,6 +276,7 @@ struct Row {
     started_at: String,
     ended_at: Option<String>,
     duration_s: Option<i64>,
+    end_status: Option<String>,
     bucket: Option<String>,
     sleep_hours: Option<f64>,
     caffeine: Option<i64>,

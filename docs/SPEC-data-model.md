@@ -82,6 +82,12 @@ CREATE TABLE sessions (
     started_at  TEXT NOT NULL,
     ended_at    TEXT NULL,
     duration_s  INTEGER NULL,
+    -- чем закончилась сессия (S2.5, миграция 0003): 'finished' — штатный
+    -- стоп; 'interrupted' — сигнал ОС/выход/краш (recovery-проходом при
+    -- старте); 'aborted' — пользователь прервал вручную. NULL — идёт
+    -- сейчас или завершена до S2.5.
+    end_status  TEXT NULL CHECK (end_status IS NULL OR end_status IN
+                      ('finished','interrupted','aborted')),
     -- локальное время дня для аналитики (не зависит от TZ-переходов)
     local_time_bucket TEXT NULL CHECK (local_time_bucket IN
                       ('morning','day','evening','night')),
@@ -133,6 +139,9 @@ CREATE TABLE probes (
     fired_at    TEXT NULL,                    -- когда показано уведомление
     answered_at TEXT NULL,
     delay_minutes INTEGER NULL,
+    -- метка последнего повтора-«будильника» (S2.5, миграция 0003):
+    -- fired-зонд без ответа напоминает каждые reminder_interval_min
+    last_reminder_at TEXT NULL,
     window_state TEXT NOT NULL CHECK (window_state IN
                     ('scheduled','fired','answered','missed','skipped')),
     updated_at  TEXT NOT NULL
@@ -207,6 +216,10 @@ CREATE TABLE schema_version (
 | `i18n.lang` | `"ru"` / `"en"` |
 | `crypto.mode` | `"auto"` / `"passphrase"` |
 | `events.custom_kinds` | JSON-массив пользовательских кнопок-маркеров |
+| `residency.autostart` | `true` — запускаться с системой (XDG / HKCU Run) |
+| `residency.sound` | `"off"` / `"chime"` / `"bell"` — звук оповещений |
+| `residency.reminder_interval_min` | `15` — повтор-«будильник» неотвеченного зонда (0 — выкл) |
+| `residency.show_window_on_start` | `true` — показывать окно при запуске (false — старт в трей) |
 
 Мастер-ключ auto-режима в `settings` не хранится — только в OS keyring
 под именем `decon.master-key` (SPEC §7.1, реализация S2:
@@ -217,6 +230,13 @@ CREATE TABLE schema_version (
 из-за FK `scale_versions.scale_id`; дубли формулировок удаляются после
 переноса ответов, старые определения — soft-delete). Контекст ответа
 (pre-замер / зонд) выводится из `responses.session_id` / `probe_id`.
+
+**Миграция 0003** (S2.5): резидентный режим и честный shutdown —
+`sessions.end_status` (CHECK `finished`/`interrupted`/`aborted`; NULL —
+идёт сейчас или завершена до S2.5) и `probes.last_reminder_at`.
+Исторические строки не перезаписываются; recovery-проход при старте
+закрывает висящие сессии (`ended_at IS NULL` → `interrupted`,
+`duration_s` от `started_at`).
 
 ## 6. Миграции
 

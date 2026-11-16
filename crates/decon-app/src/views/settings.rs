@@ -1,9 +1,11 @@
-//! Экран настроек (S2): зонды, сигналы сессии, язык, статус keyring.
+//! Экран настроек (S2): зонды, сигналы сессии, язык, статус keyring,
+//! резидентный режим (S2.5): автозапуск, звук, повторы, старт в трей.
 
 use crate::i18n::{I18n, Str};
 use crate::platform::secret_store::KeyringBackend;
 use crate::views::AppState as ShellState;
 use decon_core::model::settings::Language;
+use decon_core::model::settings::SoundChoice;
 use dioxus::prelude::*;
 
 /// Экран настроек: все параметры в БД (правило №6: ноль конфигов).
@@ -17,7 +19,17 @@ pub fn settings_screen() -> Element {
     let count = state.read().app.probe_count.clone();
     let gap = state.read().app.probe_min_gap.clone();
     let interval = state.read().app.signal_interval.clone();
+    let reminder = state.read().app.reminder_interval.clone();
     let probes_enabled = state.read().app.settings.probe.enabled;
+    let show_window_label = format!(
+        "{}: {}",
+        i18n.get(Str::ShowWindowOnStart),
+        if state.read().app.settings.residency.show_window_on_start {
+            i18n.get(Str::On)
+        } else {
+            i18n.get(Str::Off)
+        }
+    );
     let keyring_label = match state.read().app.keyring_backend {
         KeyringBackend::OsKeyring => i18n.get(Str::KeyringOs),
         KeyringBackend::Memory => i18n.get(Str::KeyringMemory),
@@ -26,6 +38,18 @@ pub fn settings_screen() -> Element {
         "{}: {}",
         i18n.get(Str::ProbesEnabled),
         if probes_enabled {
+            i18n.get(Str::On)
+        } else {
+            i18n.get(Str::Off)
+        }
+    );
+    // Статус автозапуска — кэшированный факт из ОС (App::skeleton при
+    // старте), обновляется кнопкой; reg query не дёргается на каждый рендер.
+    let autostart_actual = state.read().app.autostart_actual;
+    let autostart_label = format!(
+        "{}: {}",
+        i18n.get(Str::Autostart),
+        if autostart_actual {
             i18n.get(Str::On)
         } else {
             i18n.get(Str::Off)
@@ -82,6 +106,74 @@ pub fn settings_screen() -> Element {
                 max: "3600",
                 value: "{interval}",
                 oninput: move |e| state.write().app.signal_interval = e.value(),
+            }
+
+            // --- Резидентный режим (S2.5)
+            h2 { {i18n.get(Str::ResidencyTitle)} }
+            div { class: "row",
+                button {
+                    class: if state.read().app.autostart_actual { "primary" },
+                    onclick: move |_| {
+                        let mut s = state.write();
+                        let want = !s.app.autostart_actual;
+                        let res = if want {
+                            crate::platform::autostart::enable()
+                        } else {
+                            crate::platform::autostart::disable()
+                        };
+                        match res {
+                            Ok(()) => {
+                                s.app.autostart_actual = want;
+                                s.app.settings.residency.autostart = want;
+                            }
+                            Err(e) => s.error = Some(e),
+                        }
+                    },
+                    "{autostart_label}"
+                }
+                button {
+                    onclick: move |_| {
+                        crate::platform::sound::play(
+                            crate::platform::sound::Sound::Chime
+                        );
+                    },
+                    {i18n.get(Str::TestSound)}
+                }
+            }
+            label { {i18n.get(Str::SoundSetting)} }
+            div { class: "row",
+                for (choice, name) in [
+                    (SoundChoice::Off, i18n.get(Str::SoundOff)),
+                    (SoundChoice::Chime, i18n.get(Str::SoundChime)),
+                    (SoundChoice::Bell, i18n.get(Str::SoundBell)),
+                ] {
+                    button {
+                        class: if state.read().app.settings.residency.sound == choice { "primary" },
+                        onclick: move |_| {
+                            state.write().app.settings.residency.sound = choice;
+                        },
+                        {name}
+                    }
+                }
+            }
+            label { {i18n.get(Str::ReminderInterval)} }
+            input {
+                r#type: "number",
+                min: "0",
+                max: "120",
+                value: "{reminder}",
+                oninput: move |e| state.write().app.reminder_interval = e.value(),
+            }
+            div { class: "row", style: "margin-top: 8px;",
+                button {
+                    class: if state.read().app.settings.residency.show_window_on_start { "primary" },
+                    onclick: move |_| {
+                        let mut s = state.write();
+                        s.app.settings.residency.show_window_on_start =
+                            !s.app.settings.residency.show_window_on_start;
+                    },
+                    "{show_window_label}"
+                }
             }
 
             // --- Зонды вкл/выкл

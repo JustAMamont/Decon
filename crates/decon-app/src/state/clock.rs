@@ -80,7 +80,10 @@ pub fn catchup_delay_minutes(scheduled_at: &str) -> Option<i64> {
         let days = days_from_civil(dp[0], dp[1], dp[2]);
         Some(days * 1440 + tp[0] * 60 + tp[1] + tp[2] / 60)
     };
-    let diff = to_min(scheduled_at)? - to_min(&now)?;
+    // Задержка = насколько ответ позже плана (догоняющий: now > scheduled).
+    // Инверсия знака была багом S2: разница «план − сейчас» всегда
+    // отрицательна для опоздавших и давала None вместо задержки.
+    let diff = to_min(&now)? - to_min(scheduled_at)?;
     // Отрицательная (ответ «до» плана — гонка минут) или <5 — свежий
     (diff >= 5).then_some(diff)
 }

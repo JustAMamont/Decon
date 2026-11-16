@@ -11,6 +11,7 @@
 | S0 Скелет проекта | ✅ принят |
 | S1 Core: модель + БД + журнал сессий | ✅ принят (2026-11-16; заметки UI — S2, см. ниже) |
 | S2 Шкалы + зонды дня | ✅ принят (2026-11-16; конструктор шкал → S4, см. ниже) |
+| S2.5 Резидентный режим: трей, автозапуск, звуки, graceful shutdown | 🔨 в работе |
 | S3 Тренажёры: Шульте + MOT | ⬜ |
 | S4 Аналитика + экспорт | ⬜ |
 | S5 Дополнительные тренажёры: UFOV, звуковое поле, layer-switch | ⬜ |
@@ -133,6 +134,104 @@
   (сейчас системное время = UTC); слойная карта пишет техническую сессию
   `layer-map` (до появления отдельного типа записи в S4-аналитике);
   Windows-уведомления — при первой Windows-сборке (S6-порт проверит).
+
+## S2.5 — Резидентный режим: трей, автозапуск, звуки, graceful shutdown
+
+**Цель:** приложение работает как резидентный демон с иконкой в системном
+трее на обеих платформах: запускается вместе с системой (по желанию
+пользователя), живёт в фоне, пока его не выключат руками, зонды срабатывают
+без запущенного на экран окна. Персистенс — священен: все контролируемые
+сценарии завершения (SIGTERM/SIGINT, выход из трея, ручное прерывание
+сессии) финализируют данные честно; висящие после сбоя сессии помечаются
+при следующем старте.
+
+**Состав:**
+- `db/migrations/0003_residency_shutdown.sql`: `sessions.end_status`
+  (`finished`/`interrupted`/`aborted`, DEFAULT `finished`) + `probes.last_reminder_at`;
+- `model/session.rs`: `SessionEndStatus` + финализация с статусом;
+  `model/settings.rs`: `ResidencySettings` (автозапуск, звук вкл/выкл и выбор
+  chime/bell, интервал повтора напоминаний, «показывать окно при старте»);
+- `state/app.rs`: стрим-флаш событий живой сессии каждые 15 с (арена не
+  копится в ОЗУ дольше); recovery-проход при старте (`ended_at IS NULL` →
+  `interrupted` + расчёт duration по started_at);
+- `state/shutdown.rs`: оркестратор финализации — одна функция
+  `finalize_session(...)` для всех путей выхода; закрывает сессию
+  (`end_status=interrupted`), флашит журнал, `PRAGMA wal_checkpoint(TRUNCATE)`;
+- `platform/autostart.rs`: Linux — `~/.config/autostart/decon.desktop` (XDG),
+  Windows — `HKCU\...\Run` (через `windows-sys` или `reg add` через Command);
+- `platform/tray.rs`: иконка в трее (tray-icon через dioxus-desktop 0.7.10:
+  `init_tray_icon` + `use_tray_menu_event_handler`), меню «Открыть / Выход»,
+  close-to-tray (`WindowCloseBehaviour::WindowHides`), скрытый старт при
+  резидентном режиме; левый клик — открыть окно;
+- `platform/sound.rs`: процедурные звуки (синтез в репозитории, CC0), WAV в
+  assets, воспроизведение Linux: canberra/paplay/aplay (первый найденный),
+  Windows: `winmm PlaySound` (через `windows-sys`), фолбэк — тишина;
+- `state/probes_flow.rs`: повторы-«будильник» — если зонд fired и не отвечен
+  N минут (настройка, дефолт 15), напомнить (уведомление + звук);
+- `views/settings.rs`: секция «Резидентный режим»: автозапуск, звук (chime/bell
+  /выкл), интервал повтора, «показывать окно при старте», тест звука; кнопка
+  «Прервать сессию» на экране практики (end_status=aborted).
+
+**Критерии приёмки:**
+1. Интеграционный тест: сессия, «погибшая» без stop (simulated crash) при
+   следующем старте помечена `end_status='interrupted'`, duration_s посчитан
+   от started_at, события стрим-флаша (всё, что успело уйти до «краша»)
+   на месте.
+2. Интеграционный тест graceful shutdown: `finalize_session` при живой
+   сессии (события в арене + уже зафлашенные) записывает все события,
+   duration/end_status='interrupted' честно.
+3. Стрим-флаш: событие старта + маркеры живой сессии доступны в БД (SELECT)
+   в течение 15 с после добавления, не дожидаясь stop.
+4. Повтор-«будильник»: fired-зонд без ответа дольше N мин → в БД пишет
+   last_reminder_at, повторные уведомления идут по интервалу, не чаще.
+4a. Скрытый старт: резидентный режим + «не показывать окно» → окно создано
+   с visible=false (проверка в headless-путём логики, не GUI), трей активен.
+4b. Автозапуск: `autostart::enable()/disable()/is_enabled()` — roundtrip в
+   тестах с фейковой HOME (Linux), на Windows — код-путь под cfg, проверен
+   компиляцией.
+4c. Звук: WAV-файлы в assets, не пустые, валидный RIFF, воспроизведение —
+   платформенный вызов; тест генератора (дeterministic samples, не тишина).
+4d. При выключенной настройке звука сигнал/зонд не пытается воспроизвести
+   файл (нет вызова платформенной функции — проверка юнит-тестом логики).
+4e. Windows: уведомления/трей/автозапуск компилируются под
+   x86_64-pc-windows-msvc (cargo check в CI ubuntu через cross? — нет:
+   локальный check Windows-таргетом в CI Windows-джобе, Ubuntu — main).
+4e. Итог: cargo fmt/clippy/test зелёные; gitleaks чист; CI (ubuntu+windows)
+   зелёный на теге scope-S2.5.
+
+### Прогресс S2.5 (2026-11-16)
+
+- ✅ Критерий 1: recovery висящих сессий — `finalize_dangling` закрывает
+  как `interrupted` с duration от started_at, идемпотентен
+  (`tests/residency_shutdown.rs::crash_recovery_marks_interrupted`);
+- ✅ Критерий 2: graceful shutdown — `Session::finalize` + флаш буфера +
+  update: ни одно событие не теряется, двойная финализация — no-op
+  (`graceful_shutdown_persists_everything`);
+- ✅ Критерий 3: стрим-флаш — `RunningSession::flush_now` каждые 15 с
+  (`FLUSH_INTERVAL_MS`), события читаются из БД при живой сессии
+  (`events_streamed_before_stop`);
+- ✅ Критерий 4: повторы-«будильники» — `note_reminder`/`last_reminder_at`
+  (`probe_reminder_writes_last_reminder_at` + unit `reminder_marks_fired_only`);
+- ✅ Критерий 4b: автозапуск roundtrip с фейковым XDG_CONFIG_HOME
+  (`platform/autostart.rs::autostart_roundtrip_fake_home`);
+- ✅ Критерий 4c: WAV-файлы валидны (RIFF, не пустые), генератор
+  детерминирован (`platform/sound.rs` тесты); headless — тишина;
+- ✅ Критерий 4d: логика выбора звука в `play_alert_sound` (Off — нет
+  вызова платформенной функции);
+- ✅ Критерий 4e: миграция 0003 CHECK + down
+  (`migration_0003_columns_and_check`, `migrations_are_sequential`);
+- ✅ Состав: трей (tray-icon через dioxus-desktop, меню Открыть/Выход,
+  close-to-tray `WindowCloseBehaviour::WindowHides`), скрытый старт
+  (`--hidden` + настройка), SIGTERM/SIGINT (signal-hook → флаг → тикер),
+  кнопка «Прервать сессию» (aborted), настройки резидента в UI,
+  процедурные звуки chime/bell (CC0, `scripts/gen_sounds.py`),
+  автозапуск XDG/HKCU; фикс бага S2: инвертированный знак
+  `catchup_delay_minutes` (догоняющие ответы получали None вместо
+  задержки);
+- ⚠ Честные оговорки: Windows-уведомления ОС — звук+трей до нативного
+  toast (см. ARCHITECTURE §9.5); трей в headless/CI не создаётся
+  (тихо) — ручная проверка на реальном десктопе; decon-trainers
+  dependency убрана из decon-app до S3 (не использовалась).
 
 ## S3 — Тренажёры: Шульте + MOT
 

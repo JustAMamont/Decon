@@ -16,6 +16,44 @@ pub enum SessionKind {
     Trainer,
 }
 
+/// Чем закончилась сессия (данные честности, SPEC §3 `sessions.end_status`).
+///
+/// `None`/NULL — сессия ещё идёт или завершена до появления колонки (S2.5);
+/// завершённая сессия всегда имеет статус.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionEndStatus {
+    /// Завершена штатно (кнопка «Стоп» → post-замер → сохранение).
+    Finished,
+    /// Прервана внешними силами: сигнал ОС, выход из приложения, сбой
+    /// питания/краш (финализирована recovery-проходом при старте).
+    Interrupted,
+    /// Прервана пользователем вручную («Прервать сессию»: срочно нужно
+    /// бежать, плохое самочувствие и т.п.).
+    Aborted,
+}
+
+impl SessionEndStatus {
+    /// Код для колонки `end_status`.
+    pub const fn as_code(self) -> &'static str {
+        match self {
+            SessionEndStatus::Finished => "finished",
+            SessionEndStatus::Interrupted => "interrupted",
+            SessionEndStatus::Aborted => "aborted",
+        }
+    }
+
+    /// Из кода БД.
+    pub fn from_code(code: &str) -> Option<Self> {
+        match code {
+            "finished" => Some(SessionEndStatus::Finished),
+            "interrupted" => Some(SessionEndStatus::Interrupted),
+            "aborted" => Some(SessionEndStatus::Aborted),
+            _ => None,
+        }
+    }
+}
+
 /// Слой дКВ, в котором велась работа (ARCHITECTURE.md §8).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -143,6 +181,8 @@ pub struct Session {
     ended_at: Option<String>,
     /// Длительность, с (заполняется при завершении).
     duration_s: Option<i64>,
+    /// Чем закончилась сессия (S2.5); `None` — идёт или завершена до S2.5.
+    end_status: Option<SessionEndStatus>,
     /// Локальная корзина времени дня (аналитика «время дня ↔ качество»).
     local_time_bucket: Option<LocalTimeBucket>,
     /// Контекст условий.
@@ -168,6 +208,7 @@ impl Session {
             started_at,
             ended_at: None,
             duration_s: None,
+            end_status: None,
             local_time_bucket: Some(bucket),
             context: SessionContext::default(),
             note: None,
@@ -237,6 +278,33 @@ impl Session {
         true
     }
 
+    /// Финализировать сессию с указанным статусом завершения (S2.5).
+    ///
+    /// Один путь для всех сценариев: штатный стоп (`Finished`), сигнал ОС /
+    /// выход из приложения (`Interrupted`), ручное прерывание
+    /// (`Aborted`). Повторный вызов — no-op (idempotent), уже
+    /// финализированная сессия не перезаписывается.
+    pub fn finalize(
+        &mut self,
+        status: SessionEndStatus,
+        ended_at: String,
+        duration_s: i64,
+    ) -> bool {
+        if self.ended_at.is_some() {
+            return false;
+        }
+        self.ended_at = Some(ended_at);
+        self.duration_s = Some(duration_s);
+        self.end_status = Some(status);
+        self.touch();
+        true
+    }
+
+    /// Статус завершения, если сессия финализирована.
+    pub const fn end_status(&self) -> Option<SessionEndStatus> {
+        self.end_status
+    }
+
     /// Момент последнего изменения (sync-поле).
     pub fn updated_at(&self) -> &str {
         &self.updated_at
@@ -270,6 +338,7 @@ impl Session {
         started_at: String,
         ended_at: Option<String>,
         duration_s: Option<i64>,
+        end_status: Option<SessionEndStatus>,
         local_time_bucket: Option<LocalTimeBucket>,
         context: SessionContext,
         note: Option<String>,
@@ -284,6 +353,7 @@ impl Session {
             started_at,
             ended_at,
             duration_s,
+            end_status,
             local_time_bucket,
             context,
             note,
@@ -439,6 +509,7 @@ mod tests {
         assert_eq!(s.kind(), SessionKind::Practice);
         assert_eq!(s.local_time_bucket(), Some(LocalTimeBucket::Day));
         assert!(s.ended_at().is_none());
+        assert!(s.end_status().is_none(), "новая сессия без статуса");
 
         s.set_layer(Some(Layer::Visual));
         assert_eq!(s.layer(), Some(Layer::Visual));
@@ -453,6 +524,52 @@ mod tests {
 
         s.soft_delete("2026-11-16T14:00:00.000Z".into());
         assert!(s.deleted_at().is_some());
+    }
+
+    #[test]
+    fn finalize_sets_status_and_is_idempotent() {
+        // Все три пути завершения пишут свой статус; повтор — no-op.
+        let mk = || Session::new(SessionKind::Practice, "2026-11-16T10:00:00.000Z".into(), 10);
+        let mut a = mk();
+        assert!(a.finalize(
+            SessionEndStatus::Interrupted,
+            "2026-11-16T10:12:00.000Z".into(),
+            720
+        ));
+        assert_eq!(a.end_status(), Some(SessionEndStatus::Interrupted));
+        assert_eq!(a.duration_s(), Some(720));
+        // Повторная финализация (двойной SIGTERM) не перезаписывает
+        assert!(!a.finalize(
+            SessionEndStatus::Aborted,
+            "2026-11-16T10:13:00.000Z".into(),
+            780
+        ));
+        assert_eq!(a.end_status(), Some(SessionEndStatus::Interrupted));
+
+        let mut b = mk();
+        assert!(b.finalize(
+            SessionEndStatus::Aborted,
+            "2026-11-16T10:05:00.000Z".into(),
+            300
+        ));
+        assert_eq!(b.end_status(), Some(SessionEndStatus::Aborted));
+
+        let mut c = mk();
+        assert!(c.finalize(
+            SessionEndStatus::Finished,
+            "2026-11-16T10:20:00.000Z".into(),
+            1200
+        ));
+        assert_eq!(c.end_status(), Some(SessionEndStatus::Finished));
+        // Коды roundtrip
+        for st in [
+            SessionEndStatus::Finished,
+            SessionEndStatus::Interrupted,
+            SessionEndStatus::Aborted,
+        ] {
+            assert_eq!(SessionEndStatus::from_code(st.as_code()), Some(st));
+        }
+        assert_eq!(SessionEndStatus::from_code("nope"), None);
     }
 
     #[test]

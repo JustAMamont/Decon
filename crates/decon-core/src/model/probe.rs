@@ -62,6 +62,8 @@ pub struct Probe {
     pub answered_at: Option<String>,
     /// Задержка ответа от планового времени, мин (>0 для догоняющих).
     pub delay_minutes: Option<i64>,
+    /// Момент последнего повтора-«будильника» (S2.5; None — повторов не было).
+    pub last_reminder_at: Option<String>,
     /// Состояние.
     pub state: ProbeState,
 }
@@ -75,6 +77,7 @@ impl Probe {
             fired_at: None,
             answered_at: None,
             delay_minutes: None,
+            last_reminder_at: None,
             state: ProbeState::Scheduled,
         }
     }
@@ -113,6 +116,17 @@ impl Probe {
     /// Доступен для догоняющего ответа (показан, но не отвечен).
     pub fn is_catchable(&self) -> bool {
         self.state == ProbeState::Fired
+    }
+
+    /// Отметить повтор-«будильник» (S2.5): зонд fired и не отвечен,
+    /// пользователю напомнили снова. Возвращает false, если зонд не в
+    /// состоянии повторов (отвечен/пропущен).
+    pub fn note_reminder(&mut self, at: String) -> bool {
+        if !self.is_catchable() {
+            return false;
+        }
+        self.last_reminder_at = Some(at);
+        true
     }
 }
 
@@ -173,5 +187,23 @@ mod tests {
             assert_eq!(ProbeState::from_code(s.as_code()), Some(s));
         }
         assert_eq!(ProbeState::from_code("bogus"), None);
+    }
+
+    #[test]
+    fn reminder_marks_fired_only() {
+        // Повтор-«будильник» пишется только в fired; scheduled/answered — нет.
+        let mut p = Probe::scheduled("2026-11-17T10:15:00.000Z".into());
+        assert!(!p.note_reminder("2026-11-17T10:30:00.000Z".into()));
+        assert!(p.last_reminder_at.is_none());
+
+        assert!(p.fire("2026-11-17T10:15:02.000Z".into()));
+        assert!(p.note_reminder("2026-11-17T10:30:00.000Z".into()));
+        assert_eq!(
+            p.last_reminder_at.as_deref(),
+            Some("2026-11-17T10:30:00.000Z")
+        );
+
+        assert!(p.answer("2026-11-17T10:16:40.000Z".into(), None));
+        assert!(!p.note_reminder("2026-11-17T10:45:00.000Z".into()));
     }
 }

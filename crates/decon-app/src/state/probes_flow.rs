@@ -87,6 +87,105 @@ pub fn open_probe(app: &mut App, probe_id: Uuid) -> Result<(), String> {
     Ok(())
 }
 
+/// Показать зонд без кражи фокуса (S2.5, резидентный режим): state →
+/// fired, готовим ответы, но окно не показываем и экран не переключаем —
+/// пользователь ответит, когда откроет приложение (или из уведомления).
+/// Возвращает true, если зонд перешёл scheduled → fired.
+pub fn fire_probe_without_focus(app: &mut App, probe_id: Uuid) -> Result<bool, String> {
+    let repo = ProbeRepo::new(&app.conn);
+    let mut probe = repo
+        .get(&probe_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| app.i18n.get(Str::Error).to_string())?;
+    if probe.state != ProbeState::Scheduled {
+        return Ok(false);
+    }
+    probe.fire(local_now_compact());
+    repo.update(&probe).map_err(|e| e.to_string())?;
+    app.active_probe = Some(probe);
+    app.today_probes = repo
+        .list_day(&local_date_today())
+        .map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+/// Повторы-«будильники» (S2.5): fired-зонды **сегодня** без ответа дольше
+/// `reminder_interval_min` — записать `last_reminder_at` и вернуть число
+/// зондов, по которым пора напомнить (уведомление + звук шлёт тикер).
+///
+/// Зонды прошлых дней в напоминания не попадают: день прошёл — на
+/// следующий recovery-тик они закрываются `missed` (`expire_old_probes`,
+/// данные честности), догоняющий ответ за прошлый день невозможен по
+/// определению зондового окна (SPEC §3 `probes`).
+pub fn remind_stale_probes(app: &mut App) -> Result<usize, String> {
+    let interval = app.settings.residency.reminder_interval_min;
+    if interval == 0 {
+        return Ok(0); // повторы выключены
+    }
+    // Recovery-чистка: fired/scheduled прошлых дней → missed
+    expire_old_probes(app)?;
+    let today = local_date_today();
+    let now = local_now_compact();
+    let repo = ProbeRepo::new(&app.conn);
+    let stale = repo.catchable().map_err(|e| e.to_string())?;
+    let mut sent = 0;
+    for mut probe in stale {
+        if !probe.scheduled_at.starts_with(&today) {
+            continue; // чужой день — не будим (закрыт expire выше)
+        }
+        let last = probe
+            .last_reminder_at
+            .clone()
+            .unwrap_or_else(|| probe.fired_at.clone().unwrap_or_default());
+        let (Some(now_min), Some(last_min)) = (compact_to_minutes(&now), compact_to_minutes(&last))
+        else {
+            continue;
+        };
+        // Первый повтор — не раньше fired_at + интервал
+        if now_min.saturating_sub(last_min) >= i64::from(interval)
+            && probe.note_reminder(now.clone())
+        {
+            repo.update(&probe).map_err(|e| e.to_string())?;
+            sent += 1;
+        }
+    }
+    Ok(sent)
+}
+
+/// Закрыть зонды прошлых дней как `missed` (полночь прошла, ответа нет).
+/// Вызывается тикером рядом с повторами и не трогает сегодняшний план.
+pub fn expire_old_probes(app: &mut App) -> Result<usize, String> {
+    let today = local_date_today();
+    let repo = ProbeRepo::new(&app.conn);
+    let old = repo
+        .catchable()
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .filter(|p| !p.scheduled_at.starts_with(&today))
+        .collect::<Vec<_>>();
+    let mut closed = 0;
+    for mut probe in old {
+        if probe.expire() {
+            repo.update(&probe).map_err(|e| e.to_string())?;
+            closed += 1;
+        }
+    }
+    Ok(closed)
+}
+
+/// Компактная метка `YYYY-MM-DDTHH:MM:SS` → минуты от эпохи (для
+/// сравнения интервалов; парсинг мягкий — мусор → None).
+fn compact_to_minutes(s: &str) -> Option<i64> {
+    let (d, t) = s.split_once('T')?;
+    let dp: Vec<i64> = d.split('-').filter_map(|x| x.parse().ok()).collect();
+    let tp: Vec<i64> = t.split(':').filter_map(|x| x.parse().ok()).collect();
+    if dp.len() != 3 || tp.len() != 3 {
+        return None;
+    }
+    let days = crate::state::clock::days_from_civil(dp[0], dp[1], dp[2]);
+    Some(days * 1440 + tp[0] * 60 + tp[1] + tp[2] / 60)
+}
+
 /// Сохранить ответы зонда (свежие или догоняющие — по состоянию).
 pub fn save_probe_answers(app: &mut App) -> Result<(), String> {
     let Some(probe) = app.active_probe.clone() else {
@@ -246,6 +345,13 @@ pub fn save_settings(app: &mut App) -> Result<(), String> {
         .ok()
         .filter(|i| (10..=3600).contains(i))
         .ok_or_else(|| app.i18n.get(Str::Error).to_string())?;
+    let reminder: u16 = app
+        .reminder_interval
+        .trim()
+        .parse()
+        .ok()
+        .filter(|r| *r <= 120)
+        .ok_or_else(|| app.i18n.get(Str::Error).to_string())?;
 
     app.settings.probe.window.start_h = sh;
     app.settings.probe.window.start_m = sm;
@@ -254,6 +360,7 @@ pub fn save_settings(app: &mut App) -> Result<(), String> {
     app.settings.probe.count = count;
     app.settings.probe.min_gap_minutes = gap;
     app.settings.session.signal_interval_s = interval;
+    app.settings.residency.reminder_interval_min = reminder;
 
     SettingsRepo::new(&app.conn)
         .save(&app.settings)

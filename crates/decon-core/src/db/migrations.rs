@@ -33,6 +33,12 @@ pub const MIGRATIONS: &[Migration] = &[
         up_sql: include_str!("migrations/0002_unify_openness_scale.sql"),
         down_sql: include_str!("migrations/0002_unify_openness_scale.down.sql"),
     },
+    Migration {
+        version: 3,
+        name: "0003_residency_shutdown",
+        up_sql: include_str!("migrations/0003_residency_shutdown.sql"),
+        down_sql: include_str!("migrations/0003_residency_shutdown.down.sql"),
+    },
 ];
 
 #[cfg(test)]
