@@ -4,7 +4,7 @@
 //! без учёта I/O SQLite. Подсчёт аллокаций — через подсчитывающий
 //! аллокатор в alloc_counter (см. ниже).
 
-use criterion::{criterion_group, criterion_main, Criterion, Throughput};
+use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use decon_core::model::event::EventKind;
 use decon_core::model::journal::SessionJournal;
 use uuid::Uuid;
@@ -60,8 +60,7 @@ fn bench_append(c: &mut Criterion) {
             for i in 0..1000i64 {
                 j.append(i, EventKind::Signal);
             }
-            let after_appends =
-                alloc_counter::ALLOCATED.load(std::sync::atomic::Ordering::Relaxed);
+            let after_appends = alloc_counter::ALLOCATED.load(std::sync::atomic::Ordering::Relaxed);
             // new() аллоцирует буфер — это setup, не hot path.
             let setup_allocs = after_new - before;
             let append_allocs = after_appends - after_new;

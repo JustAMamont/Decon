@@ -8,9 +8,7 @@ use dioxus::prelude::*;
 fn main() {
     let window = dioxus::desktop::WindowBuilder::new().with_title("Decon");
     let cfg = dioxus::desktop::Config::new().with_window(window);
-    dioxus::LaunchBuilder::new()
-        .with_cfg(cfg)
-        .launch(app);
+    dioxus::LaunchBuilder::new().with_cfg(cfg).launch(app);
 }
 
 /// Корневой компонент: S0 — пустое окно-плейсхолдер.

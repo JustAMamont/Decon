@@ -8,13 +8,13 @@
 //! - №5: ноль конфиг-файлов — после цикла в каталоге только файл БД.
 
 use decon_core::db;
-use decon_core::db::crypto::{derive_key_passphrase, FieldCryptor};
+use decon_core::db::crypto::{FieldCryptor, derive_key_passphrase};
 use decon_core::db::repo::{EventRepo, SessionRepo, SettingsRepo};
+use decon_core::model::AppSettings;
 use decon_core::model::event::EventKind;
 use decon_core::model::journal::SessionJournal;
-use decon_core::model::session::{Layer, Session, SessionKind, SessionContext};
+use decon_core::model::session::{Layer, Session, SessionContext, SessionKind};
 use decon_core::model::settings::Language;
-use decon_core::model::AppSettings;
 use std::io::Read;
 
 #[test]
@@ -90,9 +90,8 @@ fn full_session_lifecycle_roundtrip() {
     assert_eq!(events[3].kind, EventKind::ClarityFlash);
 
     // --- Критерий №4: заметки нет в файле БД (поиск по подстроке)
-    // WAL мог ещё не флашнуться в основной файл — закрываем чисто.
-    drop(event_repo);
-    drop(session_repo);
+    // WAL мог ещё не флашнуться в основной файл — закрываем чисто
+    // (репозитории не владеют подключением, их дропать не нужно).
     conn.close().expect("close db");
     let mut db_bytes = Vec::new();
     std::fs::File::open(&db_path)
@@ -145,18 +144,29 @@ fn wrong_passphrase_cannot_decrypt_but_data_intact() {
     let conn = db::open_in_memory().expect("open");
     db::migrate(&conn).expect("migrate");
 
-    let good = FieldCryptor::new(&derive_key_passphrase("правильная фраза", "c2FsdC1zYWx0LXNhbHQtc2FsdA==").unwrap())
-        .unwrap();
-    let bad = FieldCryptor::new(&derive_key_passphrase("неправильная фраза", "c2FsdC1zYWx0LXNhbHQtc2FsdA==").unwrap())
-        .unwrap();
+    let good = FieldCryptor::new(
+        &derive_key_passphrase("правильная фраза", "c2FsdC1zYWx0LXNhbHQtc2FsdA==").unwrap(),
+    )
+    .unwrap();
+    let bad = FieldCryptor::new(
+        &derive_key_passphrase("неправильная фраза", "c2FsdC1zYWx0LXNhbHQtc2FsdA==").unwrap(),
+    )
+    .unwrap();
 
     let mut s = Session::new(SessionKind::Practice, "2026-11-16T12:00:00.000Z".into(), 12);
     s.note = Some("секретная заметка".into());
     let sid = s.id;
-    SessionRepo::new(&conn).with_cryptor(&good).insert(&s).unwrap();
+    SessionRepo::new(&conn)
+        .with_cryptor(&good)
+        .insert(&s)
+        .unwrap();
 
     // Правильный ключ читает
-    let ok = SessionRepo::new(&conn).with_cryptor(&good).get(&sid).unwrap().unwrap();
+    let ok = SessionRepo::new(&conn)
+        .with_cryptor(&good)
+        .get(&sid)
+        .unwrap()
+        .unwrap();
     assert_eq!(ok.note.as_deref(), Some("секретная заметка"));
 
     // Неправильный ключ — ошибка, не тихая потеря
@@ -164,7 +174,11 @@ fn wrong_passphrase_cannot_decrypt_but_data_intact() {
     assert!(err.is_err(), "расшифровка чужим ключом должна упасть");
 
     // Строка в БД не пострадала: правильный ключ всё ещё читает её
-    let still = SessionRepo::new(&conn).with_cryptor(&good).get(&sid).unwrap().unwrap();
+    let still = SessionRepo::new(&conn)
+        .with_cryptor(&good)
+        .get(&sid)
+        .unwrap()
+        .unwrap();
     assert_eq!(still.note.as_deref(), Some("секретная заметка"));
 }
 
