@@ -16,6 +16,11 @@ decon-core.workspace = true
 decon-trainers.workspace = true
 dioxus = { version = "0.7", features = ["desktop"] }
 serde_json.workspace = true
+# Прямые зависимости app-слоя (не через core): подключение к БД и UUID
+# в состоянии приложения.
+rusqlite.workspace = true
+uuid.workspace = true
+tokio = { version = "1", features = ["time"] }
 
 [dev-dependencies]
 tempfile = "3"

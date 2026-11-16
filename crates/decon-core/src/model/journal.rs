@@ -67,15 +67,20 @@ impl SessionJournal {
         if self.len == 0 {
             return Ok(0);
         }
-        let batch: Vec<SessionEvent> = self
-            .slots
-            .drain(..)
-            .map(|s| SessionEvent::new(self.session_id, s.t_offset_ms, s.kind))
-            .collect();
+        let batch = self.take_batch();
         let n = batch.len();
         repo.insert_batch(&batch)?;
-        self.len = 0;
         Ok(n)
+    }
+
+    /// Извлечь буфер в вектор готовых событий (без записи в БД) и очистить
+    /// его. Путь UI: забрать батч для фонового потока записи.
+    pub fn take_batch(&mut self) -> Vec<SessionEvent> {
+        self.len = 0;
+        self.slots
+            .drain(..)
+            .map(|s| SessionEvent::new(self.session_id, s.t_offset_ms, s.kind))
+            .collect()
     }
 
     /// Число событий в буфере (без flush).

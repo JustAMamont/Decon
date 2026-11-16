@@ -912,8 +912,11 @@ dependencies = [
  "decon-core",
  "decon-trainers",
  "dioxus",
+ "rusqlite",
  "serde_json",
  "tempfile",
+ "tokio",
+ "uuid",
 ]
 
 [[package]]

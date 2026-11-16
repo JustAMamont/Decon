@@ -57,13 +57,23 @@ Rust + Dioxus. Offline-first, локальная SQLite-база, ноль ко�
 - **fernet + argon2 + keyring** — шифрование чувствительных полей.
 - **criterion + proptest + assert_cmd** — бенчмарки и тесты.
 
-## Сборка (когда появится код)
+## Сборка
+
+Linux: нужны `libwebkit2gtk-4.1-dev`, `libgtk-3-dev`, `libxdo-dev`
+(Debian/Ubuntu: `sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev libxdo-dev`).
 
 ```bash
-cargo run --release --package decon-app
-cargo test --workspace
-cargo bench --workspace
+cargo run --package decon-app          # запуск приложения
+cargo test --workspace                 # все тесты
+cargo bench --bench journal -p decon-core   # бенчмарки hot paths
 ```
+
+База данных: XDG_DATA_HOME/decon/decon.db (Linux), %APPDATA%\decon (Windows).
+Настройки — в самой БД (ноль конфиг-файлов), редактирование — в UI.
+
+CI: экономный режим — полный прогон только на границах скоупов
+(`git tag scope-SN && git push origin scope-SN` или Actions → Run workflow);
+см. [CONVENTIONS.md](docs/CONVENTIONS.md), правило №8.9.
 
 ## Лицензия
 

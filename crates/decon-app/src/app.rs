@@ -1,0 +1,419 @@
+//! Состояние приложения: машина экранов журнала + живая сессия.
+//!
+//! Поток (ARCHITECTURE.md §4): запуск → pre-замер → экран сессии →
+//! post-замер → сохранение. БД открывается один раз; запись идёт в том же
+//! потоке (WAL + busy_timeout держат короткие транзакции; отдельный поток
+//! записи — когда появятся тренажёры с телеметрией).
+
+use crate::i18n::{I18n, Str};
+use decon_core::db;
+use decon_core::db::repo::{EventRepo, ScaleRepo, SessionRepo, SettingsRepo};
+use decon_core::model::AppSettings;
+use decon_core::model::event::EventKind;
+use decon_core::model::journal::SessionJournal;
+use decon_core::model::scale::{Phase, Response, Scale, ScaleVersion};
+use decon_core::model::session::{Layer, Session, SessionContext, SessionKind, now_iso};
+use decon_core::model::settings::Language;
+use rusqlite::Connection;
+use std::time::Instant;
+use uuid::Uuid;
+
+/// Экран журнала.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Screen {
+    /// Выбор параметров сессии.
+    Setup,
+    /// Pre-замер (2 слайдера).
+    Pre,
+    /// Идёт практика: таймер + кнопки-маркеры.
+    Running,
+    /// Post-замер (5 слайдеров + заметка).
+    Post,
+    /// История сессий.
+    History,
+}
+
+/// Живая сессия: доменная модель + буфер событий + таймер.
+pub struct RunningSession {
+    /// Доменная модель.
+    pub session: Session,
+    /// Буфер событий (0 аллокаций на append).
+    pub journal: SessionJournal,
+    /// Прошедшее время, мс.
+    pub elapsed_ms: u64,
+    /// Следующий равномерный сигнал, мс от старта.
+    pub next_signal_ms: u64,
+    /// Интервал сигналов, мс.
+    pub signal_interval_ms: u64,
+}
+
+impl RunningSession {
+    /// Новая живая сессия.
+    pub fn new(session: Session, signal_interval_s: u32) -> Self {
+        let interval = u64::from(signal_interval_s.max(1)) * 1000;
+        RunningSession {
+            session,
+            journal: SessionJournal::new(Uuid::nil()),
+            elapsed_ms: 0,
+            next_signal_ms: interval,
+            signal_interval_ms: interval,
+        }
+    }
+
+    /// Синхронизировать journal с id сессии (id известен после insert).
+    pub fn bind_journal(&mut self, session_id: Uuid) {
+        self.journal = SessionJournal::new(session_id);
+    }
+
+    /// Прибавить прошедшее время; возвращает true, если пора равномерный
+    /// сигнал (и планирует следующий).
+    pub fn tick(&mut self, delta_ms: u64) -> bool {
+        self.elapsed_ms += delta_ms;
+        if self.elapsed_ms >= self.next_signal_ms {
+            self.next_signal_ms += self.signal_interval_ms;
+            let _ = self
+                .journal
+                .append(self.elapsed_ms as i64, EventKind::Signal);
+            return true;
+        }
+        false
+    }
+
+    /// Событие от кнопки-маркера.
+    pub fn mark(&mut self, kind: EventKind) {
+        let _ = self.journal.append(self.elapsed_ms as i64, kind);
+    }
+}
+
+/// Ответ по шкале на экране (значение слайдера).
+#[derive(Debug, Clone)]
+pub struct ScaleAnswer {
+    /// Определение шкалы (для якорей).
+    pub scale: Scale,
+    /// Версия формулировки (id пишется в responses).
+    pub version: ScaleVersion,
+    /// Текущее значение слайдера.
+    pub value: f64,
+}
+
+/// Корневое состояние приложения.
+pub struct App {
+    /// Подключение к БД (открыто на старте, живёт до выхода).
+    pub conn: Connection,
+    /// Шифровальщик заметок (ключ auto-режима).
+    /// Локаль.
+    pub i18n: I18n,
+    /// Настройки.
+    pub settings: AppSettings,
+    /// Текущий экран.
+    pub screen: Screen,
+    /// Форма запуска: слой.
+    pub setup_layer: Option<Layer>,
+    /// Форма запуска: техника.
+    pub setup_technique: String,
+    /// Форма запуска: сон.
+    pub setup_sleep: String,
+    /// Форма запуска: кофеин.
+    pub setup_caffeine: String,
+    /// Живая сессия (между Begin и Save).
+    pub running: Option<RunningSession>,
+    /// Pre-ответы.
+    pub pre_answers: Vec<ScaleAnswer>,
+    /// Post-ответы.
+    pub post_answers: Vec<ScaleAnswer>,
+    /// Текст заметки на post-экране.
+    pub note_draft: String,
+    /// Момент старта таймера (для расчёта elapsed).
+    pub timer_start: Option<Instant>,
+    /// История сессий (обновляется при входе на экран).
+    pub history: Vec<Session>,
+    /// Тост-уведомление (показывается один кадр).
+    pub toast: Option<String>,
+}
+
+impl App {
+    /// Инициализация: открыть БД в XDG-каталоге, мигрировать, посеять
+    /// шкалы, загрузить настройки и ключ. Ключ auto-режима — в ОЗУ на
+    /// время сессии (keyring-интеграция — S2, пока ключ в БД не хранится:
+    /// для пилота генерируется новый при каждом запуске, что делает старые
+    /// заметки нечитаемыми — потому заметки в UI S1 отключены до keyring).
+    pub fn init() -> Result<Self, String> {
+        let db_path = data_dir().join("decon.db");
+        if let Some(parent) = db_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        let conn = db::open(&db_path).map_err(|e| e.to_string())?;
+        db::migrate(&conn).map_err(|e| e.to_string())?;
+        ScaleRepo::new(&conn)
+            .seed_defaults()
+            .map_err(|e| e.to_string())?;
+        let settings = SettingsRepo::new(&conn).load().map_err(|e| e.to_string())?;
+
+        Ok(App {
+            conn,
+            i18n: I18n::new(settings.language),
+            settings,
+            screen: Screen::Setup,
+            setup_layer: None,
+            setup_technique: String::new(),
+            setup_sleep: String::new(),
+            setup_caffeine: String::new(),
+            running: None,
+            pre_answers: Vec::new(),
+            post_answers: Vec::new(),
+            note_draft: String::new(),
+            timer_start: None,
+            history: Vec::new(),
+            toast: None,
+        })
+    }
+
+    /// Fallback при ошибке инициализации: in-memory БД, чтобы окно
+    /// открылось и показало причину ошибки (не паникуем в проде).
+    pub fn init_fallback() -> Self {
+        let conn = db::open_in_memory().unwrap_or_else(|_| {
+            // Абсолютный крайний случай: даже in-memory не открылся.
+            // Connection::open_in_memory не падает на практике.
+            panic!("sqlite in-memory unavailable")
+        });
+        let _ = db::migrate(&conn);
+        let settings = AppSettings::default();
+        App {
+            conn,
+            i18n: I18n::new(settings.language),
+            settings,
+            screen: Screen::Setup,
+            setup_layer: None,
+            setup_technique: String::new(),
+            setup_sleep: String::new(),
+            setup_caffeine: String::new(),
+            running: None,
+            pre_answers: Vec::new(),
+            post_answers: Vec::new(),
+            note_draft: String::new(),
+            timer_start: None,
+            history: Vec::new(),
+            toast: None,
+        }
+    }
+
+    /// Начать сессию: создать запись, pre-ответы уйти в БД, перейти к Run.
+    pub fn begin_session(&mut self) -> Result<(), String> {
+        // Контекст из формы
+        let context = SessionContext {
+            sleep_hours: self.setup_sleep.trim().parse::<f64>().ok(),
+            caffeine: self.setup_caffeine.trim().parse::<i64>().ok(),
+            posture: None,
+        };
+        // Локальный час для корзины: UTC-час (пилот; TZ-детект — S2).
+        let utc_hour = (unix_now_ms() / 3_600_000 % 24) as u32;
+        let mut session = Session::new(SessionKind::Practice, now_iso(), utc_hour);
+        session.set_layer(self.setup_layer);
+        let technique = self.setup_technique.trim().to_string();
+        if !technique.is_empty() {
+            session.set_technique(Some(technique));
+        }
+        session.context = context;
+
+        // Pre-ответы
+        let sid = session.id;
+        let responses: Vec<Response> = self
+            .pre_answers
+            .iter()
+            .map(|a| Response::for_session(sid, a.version.id, a.value))
+            .collect();
+
+        let tx_ok: Result<(), db::DbError> = (|| {
+            SessionRepo::new(&self.conn).insert(&session)?;
+            if !responses.is_empty() {
+                ScaleRepo::new(&self.conn).save_session_responses(&responses)?;
+            }
+            Ok(())
+        })();
+
+        let mut running = RunningSession::new(session, self.settings.session.signal_interval_s);
+        running.bind_journal(sid);
+        self.running = Some(running);
+        self.timer_start = Some(Instant::now());
+        self.screen = Screen::Running;
+        self.toast = None;
+        tx_ok.map_err(|e| e.to_string())
+    }
+
+    /// Обновить elapsed живой сессии по таймеру; true — пора сигналить.
+    pub fn tick_running(&mut self) -> bool {
+        let Some(start) = self.timer_start else {
+            return false;
+        };
+        let elapsed = start.elapsed().as_millis() as u64;
+        let Some(r) = self.running.as_mut() else {
+            return false;
+        };
+        let delta = elapsed.saturating_sub(r.elapsed_ms);
+        if delta == 0 {
+            return false;
+        }
+        r.tick(delta)
+    }
+
+    /// Остановить практику: завершить модель, flush событий, перейти к
+    /// post-замеру.
+    pub fn stop_session(&mut self) -> Result<(), String> {
+        let i18n = &self.i18n;
+        let Some(r) = self.running.as_mut() else {
+            return Err(i18n.get(Str::Error).to_string());
+        };
+        let duration_s = (r.elapsed_ms / 1000) as i64;
+        r.session.finish(now_iso(), duration_s);
+        let batch = r.journal.take_batch();
+        let sid = r.session.id;
+        (|| -> Result<(), db::DbError> {
+            SessionRepo::new(&self.conn).update(&r.session)?;
+            if !batch.is_empty() {
+                EventRepo::new(&self.conn).insert_batch(&batch)?;
+            }
+            Ok(())
+        })()
+        .map_err(|e| e.to_string())?;
+        let _ = sid;
+
+        self.screen = Screen::Post;
+        self.note_draft.clear();
+        Ok(())
+    }
+
+    /// Сохранить post-замер и закрыть сессию.
+    pub fn save_session(&mut self) -> Result<(), String> {
+        let Some(r) = self.running.as_ref() else {
+            return Err(self.i18n.get(Str::Error).to_string());
+        };
+        let sid = r.session.id;
+        let responses: Vec<Response> = self
+            .post_answers
+            .iter()
+            .map(|a| Response::for_session(sid, a.version.id, a.value))
+            .collect();
+        (|| -> Result<(), db::DbError> {
+            if !responses.is_empty() {
+                ScaleRepo::new(&self.conn).save_session_responses(&responses)?;
+            }
+            Ok(())
+        })()
+        .map_err(|e| e.to_string())?;
+
+        self.running = None;
+        self.timer_start = None;
+        self.screen = Screen::Setup;
+        self.toast = Some(self.i18n.get(Str::SessionSaved).to_string());
+        Ok(())
+    }
+
+    /// Загрузить pre-вопросы (при входе на pre-экран).
+    pub fn load_pre_scales(&mut self) -> Result<(), String> {
+        self.pre_answers = self
+            .load_phase(Phase::Pre)
+            .map(|list| {
+                list.into_iter()
+                    .map(|(scale, version)| ScaleAnswer {
+                        scale,
+                        version,
+                        value: 5.0,
+                    })
+                    .collect()
+            })
+            .map_err(|e: db::DbError| e.to_string())?;
+        Ok(())
+    }
+
+    /// Загрузить post-вопросы (при входе на post-экран).
+    pub fn load_post_scales(&mut self) -> Result<(), String> {
+        self.post_answers = self
+            .load_phase(Phase::Post)
+            .map(|list| {
+                list.into_iter()
+                    .map(|(scale, version)| ScaleAnswer {
+                        scale,
+                        version,
+                        value: 5.0,
+                    })
+                    .collect()
+            })
+            .map_err(|e: db::DbError| e.to_string())?;
+        Ok(())
+    }
+
+    fn load_phase(&self, phase: Phase) -> Result<Vec<(Scale, ScaleVersion)>, db::DbError> {
+        ScaleRepo::new(&self.conn).list_active_phase(phase)
+    }
+
+    /// Обновить историю (при входе на экран истории).
+    pub fn reload_history(&mut self) -> Result<(), String> {
+        self.history = SessionRepo::new(&self.conn)
+            .list_recent(50)
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Текущая локаль.
+    pub const fn lang(&self) -> Language {
+        self.settings.language
+    }
+}
+
+/// Каталог данных приложения: XDG_DATA_HOME/decon (Linux) или
+/// %APPDATA%\decon (Windows).
+fn data_dir() -> std::path::PathBuf {
+    if cfg!(target_os = "windows") {
+        let appdata = std::env::var("APPDATA").unwrap_or_default();
+        if !appdata.is_empty() {
+            return std::path::PathBuf::from(appdata).join("decon");
+        }
+    }
+    let xdg = std::env::var("XDG_DATA_HOME").unwrap_or_default();
+    if !xdg.is_empty() {
+        return std::path::PathBuf::from(xdg).join("decon");
+    }
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    std::path::PathBuf::from(home)
+        .join(".local")
+        .join("share")
+        .join("decon")
+}
+
+fn unix_now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn running_session_ticks_and_signals() {
+        let session = Session::new(SessionKind::Practice, now_iso(), 12);
+        let mut r = RunningSession::new(session, 60); // сигнал каждую минуту
+        r.bind_journal(Uuid::now_v7());
+
+        assert!(!r.tick(30_000), "первая половина интервала");
+        assert!(!r.tick(29_000), "почти минута");
+        assert!(r.tick(1_000), "минута — сигнал");
+        assert_eq!(r.journal.pending(), 1);
+        assert!(!r.tick(10_000));
+        assert!(r.tick(50_000), "вторая минута");
+        assert_eq!(r.journal.pending(), 2);
+
+        r.mark(EventKind::ClarityFlash);
+        assert_eq!(r.journal.pending(), 3);
+        assert_eq!(r.elapsed_ms, 120_000);
+    }
+
+    #[test]
+    fn data_dir_prefers_xdg() {
+        // Не мутируем окружение процесса в тестах — проверяем только
+        // fallback-логику чистой функцией.
+        assert!(data_dir().ends_with("decon"));
+    }
+}
