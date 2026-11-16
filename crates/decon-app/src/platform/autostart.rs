@@ -9,6 +9,7 @@
 //! конфиг, а системная регистрация автозапуска, которую пользователь
 //! переключает в UI; содержимое полностью детерминировано приложением.
 
+#[cfg(target_os = "linux")]
 use std::path::PathBuf;
 
 /// Имя приложения для регистрации автозапуска.
@@ -143,11 +144,12 @@ pub fn disable() -> Result<(), String> {
     }
 }
 
-#[cfg(test)]
+// Тесты только для Linux-пути: Windows-ветка — reg.exe-вызовы, их
+// roundtrip проверяется CI-джобой windows-latest компиляцией (cfg-ветки).
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use super::*;
 
-    #[cfg(target_os = "linux")]
     #[test]
     fn autostart_roundtrip_fake_home() {
         // Критерий 4b: enable/disable/is_enabled roundtrip. Тест меняет
