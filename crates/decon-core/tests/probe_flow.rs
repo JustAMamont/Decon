@@ -102,7 +102,7 @@ fn openness_single_series_across_pre_and_probe() {
     let scales = ScaleRepo::new(&conn);
 
     // Pre-замер сессии
-    let mut session = Session::new(SessionKind::Practice, "2026-11-18T09:00:00".into(), 9);
+    let session = Session::new(SessionKind::Practice, "2026-11-18T09:00:00".into(), 9);
     SessionRepo::new(&conn).insert(&session).expect("insert");
     let pre = scales.list_active_phase(Phase::Pre).expect("pre");
     assert_eq!(pre.len(), 2);
@@ -142,7 +142,7 @@ fn openness_single_series_across_pre_and_probe() {
     // Аналитический ряд: один scale_id, две точки, оба контекста
     let series = scales.series("scale.openness", 100).expect("series");
     assert_eq!(series.len(), 2, "единый ряд из 2 точек");
-    let values: Vec<f64> = series.iter().map(|(_, v, _, _)| *v).collect();
+    let values: Vec<f64> = series.iter().map(|p| p.value).collect();
     assert!(values.contains(&3.0) && values.contains(&7.0));
 
     // Прямой SQL-запрос аналитики: без UNION/JION-склейки, одна таблица
@@ -176,7 +176,7 @@ fn wording_change_creates_new_version_trends_not_mixed() {
     assert_eq!(v1.version, 1);
 
     // Ответ на v1
-    let mut session = Session::new(SessionKind::Practice, "2026-11-18T10:00:00".into(), 10);
+    let session = Session::new(SessionKind::Practice, "2026-11-18T10:00:00".into(), 10);
     SessionRepo::new(&conn).insert(&session).expect("insert");
     let r1 = Response::for_session(session.id, v1.id, 5.0);
     scales.save_session_responses(&[r1]).expect("save v1");

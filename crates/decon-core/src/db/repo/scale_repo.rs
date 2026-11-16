@@ -13,6 +13,19 @@ use crate::model::scale::{
 use rusqlite::{Connection, OptionalExtension, params};
 use uuid::Uuid;
 
+/// Точка аналитического ряда шкалы (см. `ScaleRepo::series`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SeriesPoint {
+    /// Момент ответа (ISO-8601).
+    pub answered_at: String,
+    /// Значение шкалы.
+    pub value: f64,
+    /// Задержка догоняющего ответа (свежий — None).
+    pub delay_minutes: Option<i64>,
+    /// Номер версии формулировки на момент ответа.
+    pub version: i64,
+}
+
 /// Репозиторий шкал и ответов.
 pub struct ScaleRepo<'a> {
     conn: &'a Connection,
@@ -285,15 +298,11 @@ impl<'a> ScaleRepo<'a> {
         Ok(out)
     }
 
-    /// Точка аналитического ряда шкалы: (момент, значение, задержка, версия)
-    /// по всем контекстам сразу — pre-замеры и зонды дня идут одним рядом
-    /// (ROADMAP S2, критерий 4; `scale.openness`). Свежие ответы —
-    /// `delay IS NULL`, догоняющие — с задержкой.
-    pub fn series(
-        &self,
-        scale_id: &str,
-        limit: usize,
-    ) -> Result<Vec<(String, f64, Option<i64>, i64)>, DbError> {
+    /// Точка аналитического ряда шкалы по всем контекстам сразу —
+    /// pre-замеры и зонды дня идут одним рядом (ROADMAP S2, критерий 4;
+    /// `scale.openness`). Свежие ответы — `delay` None, догоняющие —
+    /// с задержкой.
+    pub fn series(&self, scale_id: &str, limit: usize) -> Result<Vec<SeriesPoint>, DbError> {
         let conn = self.conn;
         let mut stmt = conn
             .prepare(
@@ -306,12 +315,12 @@ impl<'a> ScaleRepo<'a> {
             .map_err(|e| DbError::Sqlite(e.to_string()))?;
         let rows = stmt
             .query_map(params![scale_id, limit as i64], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, f64>(1)?,
-                    row.get::<_, Option<i64>>(2)?,
-                    row.get::<_, i64>(3)?,
-                ))
+                Ok(SeriesPoint {
+                    answered_at: row.get(0)?,
+                    value: row.get(1)?,
+                    delay_minutes: row.get(2)?,
+                    version: row.get(3)?,
+                })
             })
             .map_err(|e| DbError::Sqlite(e.to_string()))?;
         let mut out = Vec::new();
