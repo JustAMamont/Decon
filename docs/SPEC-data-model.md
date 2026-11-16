@@ -208,6 +208,16 @@ CREATE TABLE schema_version (
 | `crypto.mode` | `"auto"` / `"passphrase"` |
 | `events.custom_kinds` | JSON-массив пользовательских кнопок-маркеров |
 
+Мастер-ключ auto-режима в `settings` не хранится — только в OS keyring
+под именем `decon.master-key` (SPEC §7.1, реализация S2:
+`db/keyring.rs` + `decon-app/src/platform/secret_store.rs`).
+
+**Миграция 0002** (S2): `pre.openness` + `probe.openness` → единая шкала
+`scale.openness` (новая строка + backfill ответов, PK не переименовывается
+из-за FK `scale_versions.scale_id`; дубли формулировок удаляются после
+переноса ответов, старые определения — soft-delete). Контекст ответа
+(pre-замер / зонд) выводится из `responses.session_id` / `probe_id`.
+
 ## 6. Миграции
 
 - Расположение: `decon-core/src/db/migrations/` — по файлу на версию,

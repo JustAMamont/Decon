@@ -59,11 +59,12 @@ decon/
 │   └── decon-app/            # Dioxus UI — тонкий слой
 │       ├── src/
 │       │   ├── main.rs               # Точка входа, запуск desktop
-│       │   ├── state/                # Глобальные сигналы, подписки
-│       │   ├── views/                # Экраны: journal/, trainers/, analytics/, settings/
-│       │   ├── components/           # ScaleSlider, EventMarkerButton, Chart
-│       │   ├── i18n/                 # ru/en, файлы переводов в коде (fluent-подход)
-│       │   └── platform/             # Уведомления, keyring, пути данных (XDG/AppData)
+│       │   ├── state/                # Состояние: app.rs (журнал), probes_flow.rs
+│       │   │                         # (зонды/FFMQ/слои/настройки), clock.rs (даты)
+│       │   ├── views/                # Экраны: journal.rs, probes.rs, tools.rs,
+│       │   │                         # settings.rs, widgets.rs (строка шкалы)
+│       │   ├── i18n.rs               # ru/en, строки в коде (типобезопасный enum)
+│       │   └── platform/             # secret_store.rs (keyring), notify.rs (уведомления)
 │       └── assets/
 ├── docs/                     # Этот комплект документов
 └── .github/workflows/        # ci.yml, release.yml

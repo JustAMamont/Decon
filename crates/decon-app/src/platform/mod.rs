@@ -1,8 +1,8 @@
 //! Платформенный слой: всё, что зависит от ОС (правило №7.4).
 //!
-//! Здесь — реализация `SecretStore` поверх OS keyring (Secret Service
-//! на Linux через libdbus, Wincred на Windows, Keychain на macOS) с
-//! фолбэком на память, когда системного сервиса нет (headless-прогон,
-//! CI, первый запуск без dbus-сессии).
+//! - `secret_store`: мастер-ключ в OS keyring (Secret Service / Wincred /
+//!   Keychain) с фолбэком на память в headless-окружении;
+//! - `notify`: уведомления ОС для зондов дня.
 
+pub mod notify;
 pub mod secret_store;

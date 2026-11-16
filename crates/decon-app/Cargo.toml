@@ -22,6 +22,7 @@ rusqlite.workspace = true
 uuid.workspace = true
 tokio = { version = "1", features = ["time"] }
 keyring = { version = "3.6.3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+notify-rust = "4.17.0"
 
 [dev-dependencies]
 tempfile = "3"

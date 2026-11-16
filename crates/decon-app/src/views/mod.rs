@@ -160,7 +160,8 @@ fn app_shell() -> Element {
 
     // Фоновый цикл зондов: раз в минуту проверяем «пора показать».
     // Десктоп-ограничение (ARCHITECTURE.md §5): зонды живут, пока
-    // приложение запущено.
+    // приложение запущено. Уведомление ОС дублирует открытие экрана
+    // (если окна не видно — пользователь узнает из тоста системы).
     use_future(move || async move {
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(60)).await;
@@ -170,7 +171,12 @@ fn app_shell() -> Element {
                 if let Some(first) = due.first() {
                     let id = first.id;
                     let res = crate::state::probes_flow::open_probe(&mut s.app, id);
-                    if let Err(e) = res {
+                    if res.is_ok() {
+                        crate::platform::notify::notify_probe(
+                            s.app.i18n.get(Str::AppTitle),
+                            s.app.i18n.get(Str::ProbeTitle),
+                        );
+                    } else if let Err(e) = res {
                         s.error = Some(e);
                     }
                 }
