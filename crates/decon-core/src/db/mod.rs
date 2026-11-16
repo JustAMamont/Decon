@@ -4,6 +4,7 @@
 //! synchronous=NORMAL; down-миграции только для разработки.
 
 pub mod crypto;
+pub mod keyring;
 pub mod migrations;
 pub mod repo;
 

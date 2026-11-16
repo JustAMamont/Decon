@@ -2,6 +2,7 @@
 
 mod app;
 mod i18n;
+mod platform;
 mod views;
 
 fn main() {

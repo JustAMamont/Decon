@@ -24,6 +24,8 @@ pub enum CryptoError {
 /// (ротация ключа читает старые токены, пишет новые).
 pub struct FieldCryptor {
     fernet: MultiFernet,
+    /// Ключ (base64) — для keyring-хранилища и ротации.
+    key: String,
 }
 
 impl FieldCryptor {
@@ -32,7 +34,13 @@ impl FieldCryptor {
         let f = Fernet::new(key_b64).ok_or_else(|| CryptoError::Key("bad key".into()))?;
         Ok(FieldCryptor {
             fernet: MultiFernet::new(vec![f]),
+            key: key_b64.to_string(),
         })
+    }
+
+    /// Ключ в base64 (для keyring-хранилища и ротации).
+    pub fn key_b64(&self) -> &str {
+        &self.key
     }
 
     /// Зашифровать открытый текст → fernet-токен.
