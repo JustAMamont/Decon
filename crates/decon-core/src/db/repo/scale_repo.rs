@@ -7,7 +7,8 @@
 
 use crate::db::DbError;
 use crate::model::scale::{
-    Phase, Response, Scale, ScaleKind, ScaleVersion, default_questions_v1, default_scales_v1,
+    Phase, Phases, Response, Scale, ScaleKind, ScaleVersion, default_questions_v1,
+    default_scales_v1,
 };
 use rusqlite::{Connection, OptionalExtension, params};
 use uuid::Uuid;
@@ -144,20 +145,21 @@ impl<'a> ScaleRepo<'a> {
                         anchor_high: row.get(3)?,
                         kind: ScaleKind::from_code(&kind_code)
                             .ok_or_else(|| parse_err(&format!("bad kind: {kind_code}")))?,
-                        phase: Phase::Pre, // фаза не хранится в БД — вычисляется по id
+                        phases: Phases::NONE, // не хранится в БД — вычисляется по id
                         active: row.get::<_, i64>(5)? != 0,
                     })
                 },
             )
             .optional()
             .map_err(|e| DbError::Sqlite(e.to_string()))?;
-        // Фазу достаём из дефолтного набора (производная от id).
+        // Фазы достаём из дефолтного набора (производная от id);
+        // пользовательские шкалы без фазы — только pre (конструктор S2+).
         Ok(row.map(|mut s| {
-            s.phase = default_scales_v1()
+            s.phases = default_scales_v1()
                 .into_iter()
                 .find(|d| d.id == s.id)
-                .map(|d| d.phase)
-                .unwrap_or(Phase::Pre);
+                .map(|d| d.phases)
+                .unwrap_or_else(|| Phases::single(Phase::Pre));
             s
         }))
     }
@@ -169,7 +171,7 @@ impl<'a> ScaleRepo<'a> {
     pub fn list_active_phase(&self, phase: Phase) -> Result<Vec<(Scale, ScaleVersion)>, DbError> {
         let mut out = Vec::new();
         for scale in default_scales_v1() {
-            if scale.phase != phase || !scale.active {
+            if !scale.phases.contains(phase) || !scale.active {
                 continue;
             }
             if let Some(version) = self.latest_version(&scale.id)? {
@@ -321,8 +323,8 @@ mod tests {
         let nv: i64 = conn
             .query_row("SELECT COUNT(*) FROM scale_versions", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(n, 13, "13 дефолтных шкал");
-        assert_eq!(nv, 13, "по одной версии на шкалу");
+        assert_eq!(n, 12, "12 дефолтных шкал (openness единая)");
+        assert_eq!(nv, 12, "по одной версии на шкалу (openness единая)");
 
         // Повторный сидинг — no-op
         repo.seed_defaults().unwrap();
@@ -332,7 +334,7 @@ mod tests {
         let nv2: i64 = conn
             .query_row("SELECT COUNT(*) FROM scale_versions", [], |r| r.get(0))
             .unwrap();
-        assert_eq!((n2, nv2), (13, 13));
+        assert_eq!((n2, nv2), (12, 12));
     }
 
     #[test]
@@ -344,11 +346,9 @@ mod tests {
 
         let pre = repo.list_active_phase(Phase::Pre).unwrap();
         assert_eq!(pre.len(), 2);
-        assert!(
-            pre.iter().all(|(s, v)| {
-                s.phase == Phase::Pre && v.version == 1 && !v.question.is_empty()
-            })
-        );
+        assert!(pre.iter().all(|(s, v)| {
+            s.phases.contains(Phase::Pre) && v.version == 1 && !v.question.is_empty()
+        }));
 
         let post = repo.list_active_phase(Phase::Post).unwrap();
         assert_eq!(post.len(), 5);
@@ -403,7 +403,7 @@ mod tests {
                 .unwrap_or(-1.0)
         };
         assert_eq!(get("pre.noise"), 6.0);
-        assert_eq!(get("pre.openness"), 3.0);
+        assert_eq!(get("scale.openness"), 3.0);
         assert_eq!(get("post.uniformity"), 7.0);
         assert_eq!(get("post.dissolution"), 4.0);
 

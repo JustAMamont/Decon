@@ -20,12 +20,20 @@ pub struct Migration {
 }
 
 /// Все миграции по порядку. Новые — только в конец.
-pub const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    name: "0001_init",
-    up_sql: include_str!("migrations/0001_init.sql"),
-    down_sql: include_str!("migrations/0001_init.down.sql"),
-}];
+pub const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "0001_init",
+        up_sql: include_str!("migrations/0001_init.sql"),
+        down_sql: include_str!("migrations/0001_init.down.sql"),
+    },
+    Migration {
+        version: 2,
+        name: "0002_unify_openness_scale",
+        up_sql: include_str!("migrations/0002_unify_openness_scale.sql"),
+        down_sql: include_str!("migrations/0002_unify_openness_scale.down.sql"),
+    },
+];
 
 #[cfg(test)]
 mod tests {

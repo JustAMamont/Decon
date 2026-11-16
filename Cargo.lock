@@ -928,6 +928,7 @@ dependencies = [
  "criterion",
  "fernet",
  "proptest",
+ "rand 0.8.8",
  "rand_core 0.6.4",
  "rusqlite",
  "serde",

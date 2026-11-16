@@ -41,6 +41,10 @@ impl ScaleKind {
 }
 
 /// Фаза замера: где шкала используется (SCALES.md §2–§5).
+///
+/// Маска: `scale.openness` живёт сразу в Pre и Probe (одна шкала — один
+/// ряд данных, ROADMAP S2 критерий 4), поэтому фаз у шкалы может быть
+/// несколько. `Phases` — набор фаз.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Phase {
@@ -67,6 +71,46 @@ impl Phase {
             Phase::Layer => "layer",
         }
     }
+
+    /// Бит маски `Phases`.
+    const fn bit(self) -> u8 {
+        match self {
+            Phase::Pre => 1 << 0,
+            Phase::Post => 1 << 1,
+            Phase::Carryover => 1 << 2,
+            Phase::Probe => 1 << 3,
+            Phase::Layer => 1 << 4,
+        }
+    }
+}
+
+/// Набор фаз применения шкалы (битовая маска фаз `Phase`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Phases(u8);
+
+impl Phases {
+    /// Пустой набор (внутренняя утилита конструктора).
+    pub const NONE: Phases = Phases(0);
+    /// Одна фаза.
+    pub const fn single(phase: Phase) -> Self {
+        Phases(phase.bit())
+    }
+
+    /// Добавить фазу (builder).
+    #[must_use]
+    pub const fn with(self, phase: Phase) -> Self {
+        Phases(self.0 | phase.bit())
+    }
+
+    /// Фаза входит в набор?
+    pub const fn contains(self, phase: Phase) -> bool {
+        self.0 & phase.bit() != 0
+    }
+
+    /// Хотя бы одна фаза?
+    pub const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
 }
 
 /// Определение шкалы — строка `scales`.
@@ -84,8 +128,8 @@ pub struct Scale {
     pub anchor_high: String,
     /// Тип шкалы.
     pub kind: ScaleKind,
-    /// Фаза применения.
-    pub phase: Phase,
+    /// Фазы применения (набор: `scale.openness` живёт в pre и probe).
+    pub phases: Phases,
     /// Активна (деактивация скрывает из UI, история остаётся).
     pub active: bool,
 }
@@ -157,16 +201,16 @@ impl Response {
 /// Дефолтный набор шкал v1 «Baseline-2026» (SCALES.md §2–§5).
 ///
 /// Формулировки зафиксированы документом; сидинг пишет их при первом
-/// запуске. `probe.openness` = `pre.openness` по якорям — намеренно
-/// (сравнимый ряд, SCALES.md §5).
+/// запуске. Якорь `scale.openness` один на фазы pre/probe (единый ряд
+/// данных — ROADMAP S2, критерий 4).
 pub fn default_scales_v1() -> Vec<Scale> {
-    let s = |id: &str, title: &str, low: &str, high: &str, phase: Phase| Scale {
+    let s = |id: &str, title: &str, low: &str, high: &str, phases: Phases| Scale {
         id: id.to_string(),
         title: title.to_string(),
         anchor_low: low.to_string(),
         anchor_high: high.to_string(),
         kind: ScaleKind::Slider,
-        phase,
+        phases,
         active: true,
     };
     vec![
@@ -176,50 +220,54 @@ pub fn default_scales_v1() -> Vec<Scale> {
             "Шум в голове",
             "Полная внутренняя тишина",
             "Мысли захлёстывают, поток не останавливается",
-            Phase::Pre,
+            Phases::single(Phase::Pre),
         ),
-        s(
-            "pre.openness",
-            "Открытость поля",
-            "Полностью сужено на одном объекте",
-            "Ровно открытое, разлитое поле",
-            Phase::Pre,
-        ),
+        // Одна шкала в двух контекстах (ROADMAP S2, критерий 4):
+        // pre-замер и зонды дня дают единый ряд по scale_id.
+        Scale {
+            id: "scale.openness".to_string(),
+            title: "Открытость поля".to_string(),
+            anchor_low: "Полностью сужено на одном объекте".to_string(),
+            anchor_high: "Ровно открытое, разлитое поле".to_string(),
+            kind: ScaleKind::Slider,
+            phases: Phases::NONE.with(Phase::Pre).with(Phase::Probe),
+            active: true,
+        },
         // --- Post (SCALES.md §3)
         s(
             "post.uniformity",
             "Равномерность",
             "Всё стянуто в одну-две точки",
             "Идеально ровно по всему полю",
-            Phase::Post,
+            Phases::single(Phase::Post),
         ),
         s(
             "post.background",
             "Осознаваемый фон",
             "Фон полностью исчез из сознания, видел только объекты",
             "Фон воспринимался весь, целиком, не хуже объектов",
-            Phase::Post,
+            Phases::single(Phase::Post),
         ),
         s(
             "post.depth",
             "Глубина",
             "Лишь скользнул по поверхности",
             "Максимальная глубина за всю мою практику",
-            Phase::Post,
+            Phases::single(Phase::Post),
         ),
         s(
             "post.stability",
             "Стабильность",
             "Рассыпалось почти сразу",
             "Держалось всю сессию без провалов",
-            Phase::Post,
+            Phases::single(Phase::Post),
         ),
         s(
             "post.dissolution",
             "Растворение фигур",
             "Фигуры резко ярче фона, фон не виден",
             "Всё слилось в единое равномерное поле",
-            Phase::Post,
+            Phases::single(Phase::Post),
         ),
         // --- Carryover (SCALES.md §4)
         s(
@@ -227,22 +275,16 @@ pub fn default_scales_v1() -> Vec<Scale> {
             "Остаточный фон",
             "Полностью растворилось",
             "Держится в полную силу",
-            Phase::Carryover,
+            Phases::single(Phase::Carryover),
         ),
-        // --- Probe (SCALES.md §5): 2 слайдера + 1 флаг
-        s(
-            "probe.openness",
-            "Открытость поля",
-            "Полностью сужено на одном объекте",
-            "Ровно открытое поле",
-            Phase::Probe,
-        ),
+        // --- Probe (SCALES.md §5): openness уже выше (единая шкала),
+        // остаётся спонтанность + флаг практики
         s(
             "probe.spontaneity",
             "Спонтанность",
             "Только через усилие",
             "Само собой, привычно",
-            Phase::Probe,
+            Phases::single(Phase::Probe),
         ),
         Scale {
             id: "probe.practiced_today".to_string(),
@@ -250,7 +292,7 @@ pub fn default_scales_v1() -> Vec<Scale> {
             anchor_low: "нет".to_string(),
             anchor_high: "да".to_string(),
             kind: ScaleKind::Flag,
-            phase: Phase::Probe,
+            phases: Phases::single(Phase::Probe),
             active: true,
         },
         // --- Layer map (SCALES.md §6.2)
@@ -259,14 +301,14 @@ pub fn default_scales_v1() -> Vec<Scale> {
             "Доступность слоя",
             "Ни разу не получалось",
             "Вхожу легко, по желанию",
-            Phase::Layer,
+            Phases::single(Phase::Layer),
         ),
         s(
             "layer.holding",
             "Удержание слоя",
             "Рассыпается за секунды",
             "Держится многие минуты без усилия",
-            Phase::Layer,
+            Phases::single(Phase::Layer),
         ),
     ]
 }
@@ -276,13 +318,13 @@ pub fn default_scales_v1() -> Vec<Scale> {
 /// Вынесено отдельно от `default_scales_v1`, потому что в `scales`
 /// хранятся только якоря, а вопрос — в `scale_versions`.
 pub fn default_questions_v1() -> std::collections::HashMap<String, String> {
-    let pairs: [(&str, &str); 13] = [
+    let pairs: [(&str, &str); 12] = [
         (
             "pre.noise",
             "Насколько сейчас активен внутренний диалог / умственный шум?",
         ),
         (
-            "pre.openness",
+            "scale.openness",
             "Насколько ваше внимание прямо сейчас расширено, а не сужено на чём-то одном?",
         ),
         (
@@ -306,7 +348,6 @@ pub fn default_questions_v1() -> std::collections::HashMap<String, String> {
             "post.carryover",
             "Состояние (открытость, равномерность) всё ещё присутствует само собой?",
         ),
-        ("probe.openness", "Каково ваше внимание прямо сейчас?"),
         (
             "probe.spontaneity",
             "Если внимание открытое — оно возникло само, без усилия?",
@@ -327,28 +368,58 @@ mod tests {
 
     #[test]
     fn default_set_matches_scales_md() {
-        // SCALES.md: pre 2 + post 5 + carryover 1 + probe 3 + layer 2 = 13
+        // pre 2 + post 5 + carryover 1 + probe 3 + layer 2, но openness —
+        // одна шкала на два контекста → 12 определений (ROADMAP S2, кр. 4)
         let scales = default_scales_v1();
-        assert_eq!(scales.len(), 13);
+        assert_eq!(scales.len(), 12);
         assert_eq!(
-            scales.iter().filter(|s| s.phase == Phase::Pre).count(),
+            scales
+                .iter()
+                .filter(|s| s.phases.contains(Phase::Pre))
+                .count(),
             2,
             "pre: noise, openness"
         );
         assert_eq!(
-            scales.iter().filter(|s| s.phase == Phase::Post).count(),
+            scales
+                .iter()
+                .filter(|s| s.phases.contains(Phase::Post))
+                .count(),
             5,
             "post: uniformity, background, depth, stability, dissolution"
         );
         assert_eq!(
             scales
                 .iter()
-                .filter(|s| s.phase == Phase::Carryover)
+                .filter(|s| s.phases.contains(Phase::Carryover))
                 .count(),
             1
         );
-        assert_eq!(scales.iter().filter(|s| s.phase == Phase::Probe).count(), 3);
-        assert_eq!(scales.iter().filter(|s| s.phase == Phase::Layer).count(), 2);
+        assert_eq!(
+            scales
+                .iter()
+                .filter(|s| s.phases.contains(Phase::Probe))
+                .count(),
+            3,
+            "probe: openness (общая), spontaneity, practiced_today"
+        );
+        assert_eq!(
+            scales
+                .iter()
+                .filter(|s| s.phases.contains(Phase::Layer))
+                .count(),
+            2
+        );
+
+        // Критерий №4 ROADMAP S2: openness — один scale_id в двух фазах
+        let openness = scales
+            .iter()
+            .find(|s| s.id == "scale.openness")
+            .expect("scale.openness существует");
+        assert!(openness.phases.contains(Phase::Pre));
+        assert!(openness.phases.contains(Phase::Probe));
+        assert!(!scales.iter().any(|s| s.id == "pre.openness"));
+        assert!(!scales.iter().any(|s| s.id == "probe.openness"));
 
         // ID уникальны
         let ids: std::collections::HashSet<&String> = scales.iter().map(|s| &s.id).collect();
@@ -364,7 +435,7 @@ mod tests {
                 .iter()
                 .filter(|s| s.kind == ScaleKind::Slider)
                 .count(),
-            12
+            11
         );
 
         // У каждой шкалы есть вопрос

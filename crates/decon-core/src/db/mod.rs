@@ -154,7 +154,7 @@ mod tests {
         let again: i64 = conn
             .query_row("SELECT MAX(version) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(again, 1);
+        assert_eq!(again, migrations::MIGRATIONS.len() as i64);
     }
 
     #[test]
@@ -165,6 +165,105 @@ mod tests {
         let n: i64 = conn
             .query_row("SELECT COUNT(*) FROM schema_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(n, 1);
+        assert_eq!(n, migrations::MIGRATIONS.len() as i64);
+    }
+
+    /// S2: миграция 0002 унифицирует openness — ответы зондов и pre-замеры
+    /// ссылаются на одну шкалу, дубль формулировки исчезает.
+    #[test]
+    fn migration_0002_unifies_openness_responses() {
+        let conn = open_in_memory().unwrap();
+        // Схема v1 без миграции данных
+        conn.execute_batch(migrations::MIGRATIONS[0].up_sql)
+            .unwrap();
+
+        // Данные старой формы: pre.openness в сессии, probe.openness в зондах
+        conn.execute(
+            "INSERT INTO scales (id, title, anchor_low, anchor_high, kind, active, updated_at)
+             VALUES ('pre.openness','Открытость поля','низ','верх','slider',1,'2026-11-16T10:00:00.000Z'),
+                    ('probe.openness','Открытость поля','низ','верх','slider',1,'2026-11-16T10:00:00.000Z')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO scale_versions (id, scale_id, version, question, anchors_json, created_at)
+             VALUES ('018f0000-0000-7000-8000-0000000000a1','pre.openness',1,'q?','{}','2026-11-16T10:00:00.000Z'),
+                    ('018f0000-0000-7000-8000-0000000000a2','probe.openness',1,'q?','{}','2026-11-16T10:00:00.000Z')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sessions (id, kind, started_at, updated_at)
+             VALUES ('018f0000-0000-7000-8000-0000000000s1','practice','2026-11-16T09:00:00.000Z','2026-11-16T09:00:00.000Z')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO probes (id, scheduled_at, window_state, updated_at)
+             VALUES ('018f0000-0000-7000-8000-0000000000p1','2026-11-16T12:00:00.000Z','fired','2026-11-16T12:00:00.000Z')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO responses (id, session_id, probe_id, scale_version_id, value, answered_at, updated_at)
+             VALUES
+              ('018f0000-0000-7000-8000-0000000000r1','018f0000-0000-7000-8000-0000000000s1',NULL,'018f0000-0000-7000-8000-0000000000a1',4.0,'2026-11-16T09:01:00.000Z','2026-11-16T09:01:00.000Z'),
+              ('018f0000-0000-7000-8000-0000000000r2',NULL,'018f0000-0000-7000-8000-0000000000p1','018f0000-0000-7000-8000-0000000000a2',7.5,'2026-11-16T12:01:00.000Z','2026-11-16T12:01:00.000Z')",
+            [],
+        )
+        .unwrap();
+
+        // Миграция 0002
+        conn.execute_batch(migrations::MIGRATIONS[1].up_sql)
+            .unwrap();
+
+        // Оба ответа указывают на одну версию scale.openness
+        let (n_unified, v1): (i64, String) = conn
+            .query_row(
+                "SELECT COUNT(*), MAX(r.scale_version_id) FROM responses r
+                 JOIN scale_versions sv ON sv.id = r.scale_version_id
+                 WHERE sv.scale_id = 'scale.openness'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(n_unified, 2, "оба ответа — на одной шкале");
+        assert_eq!(
+            v1, "018f0000-0000-7000-8000-0000000000a1",
+            "версия pre.openness сохранена (тот же UUID)"
+        );
+
+        // Дубль удалён, определение soft-deleted
+        let n_probe_versions: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM scale_versions WHERE scale_id='probe.openness'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n_probe_versions, 0);
+        let probe_active: i64 = conn
+            .query_row(
+                "SELECT active FROM scales WHERE id='probe.openness'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(probe_active, 0, "probe.openness деактивирован");
+
+        // Down: ответы зондов возвращаются на воссозданную probe.openness
+        conn.execute_batch(migrations::MIGRATIONS[1].down_sql)
+            .unwrap();
+        let (n_pre, n_probe): (i64, i64) = conn
+            .query_row(
+                "SELECT
+                   SUM(CASE WHEN sv.scale_id='pre.openness' THEN 1 ELSE 0 END),
+                   SUM(CASE WHEN sv.scale_id='probe.openness' THEN 1 ELSE 0 END)
+                 FROM responses r JOIN scale_versions sv ON sv.id = r.scale_version_id",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((n_pre, n_probe), (1, 1), "down вернул раздельные шкалы");
     }
 }

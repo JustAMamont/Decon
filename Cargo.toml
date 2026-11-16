@@ -28,6 +28,7 @@ thiserror = "2.0"
 fernet = { version = "0.2", default-features = false, features = ["rustcrypto"] }
 argon2 = { version = "0.5", default-features = false, features = ["alloc", "password-hash"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
+rand = { version = "0.8", default-features = false, features = ["std_rng"] }
 base64 = "0.22"
 
 # Dev

@@ -140,7 +140,7 @@ fn full_session_lifecycle_roundtrip() {
             .unwrap_or(f64::NAN)
     };
     assert_eq!(resp("pre.noise"), 6.5);
-    assert_eq!(resp("pre.openness"), 3.0);
+    assert_eq!(resp("scale.openness"), 3.0);
     assert_eq!(resp("post.uniformity"), 7.0);
     assert_eq!(resp("post.background"), 6.0);
     assert_eq!(resp("post.depth"), 8.5);
