@@ -187,6 +187,25 @@ impl Response {
         }
     }
 
+    /// Новый ответ на шкалу зонда (ESM). `delay_minutes` — задержка
+    /// догоняющего ответа (>0), свежий ответ — None.
+    pub fn for_probe(
+        probe_id: Uuid,
+        scale_version_id: Uuid,
+        value: f64,
+        delay_minutes: Option<i64>,
+    ) -> Self {
+        Response {
+            id: Uuid::now_v7(),
+            session_id: None,
+            probe_id: Some(probe_id),
+            scale_version_id,
+            value,
+            answered_at: crate::model::session::now_iso(),
+            delay_minutes,
+        }
+    }
+
     /// Валидация значения по типу шкалы (0..=10 или 0|1).
     pub fn is_valid_value(value: f64, kind: ScaleKind) -> bool {
         match kind {

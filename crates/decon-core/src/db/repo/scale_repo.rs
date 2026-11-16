@@ -167,12 +167,18 @@ impl<'a> ScaleRepo<'a> {
     /// Активные шкалы фазы (для экрана pre/post/probe), актуальные версии.
     ///
     /// Возвращает (шкала, версия формулировки) — UI рисует вопрос из
-    /// версии, а не из определения.
+    /// версии, а не из определения. Признак `active` читается из БД:
+    /// конструктор шкал (и деактивация) меняет его там, а не в коде.
     pub fn list_active_phase(&self, phase: Phase) -> Result<Vec<(Scale, ScaleVersion)>, DbError> {
         let mut out = Vec::new();
         for scale in default_scales_v1() {
-            if !scale.phases.contains(phase) || !scale.active {
+            if !scale.phases.contains(phase) {
                 continue;
+            }
+            if let Some(stored) = self.get(&scale.id)? {
+                if !stored.active {
+                    continue;
+                }
             }
             if let Some(version) = self.latest_version(&scale.id)? {
                 out.push((scale, version));
@@ -277,6 +283,55 @@ impl<'a> ScaleRepo<'a> {
             out.push(r.map_err(|e| DbError::Sqlite(e.to_string()))?);
         }
         Ok(out)
+    }
+
+    /// Точка аналитического ряда шкалы: (момент, значение, задержка, версия)
+    /// по всем контекстам сразу — pre-замеры и зонды дня идут одним рядом
+    /// (ROADMAP S2, критерий 4; `scale.openness`). Свежие ответы —
+    /// `delay IS NULL`, догоняющие — с задержкой.
+    pub fn series(
+        &self,
+        scale_id: &str,
+        limit: usize,
+    ) -> Result<Vec<(String, f64, Option<i64>, i64)>, DbError> {
+        let conn = self.conn;
+        let mut stmt = conn
+            .prepare(
+                "SELECT r.answered_at, r.value, r.delay_minutes, sv.version
+                 FROM responses r
+                 JOIN scale_versions sv ON sv.id = r.scale_version_id
+                 WHERE sv.scale_id = ?1 AND r.deleted_at IS NULL
+                 ORDER BY r.answered_at DESC LIMIT ?2",
+            )
+            .map_err(|e| DbError::Sqlite(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![scale_id, limit as i64], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, f64>(1)?,
+                    row.get::<_, Option<i64>>(2)?,
+                    row.get::<_, i64>(3)?,
+                ))
+            })
+            .map_err(|e| DbError::Sqlite(e.to_string()))?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(|e| DbError::Sqlite(e.to_string()))?);
+        }
+        Ok(out)
+    }
+
+    /// Активация/деактивация шкалы: деактивация скрывает из UI, история
+    /// ответов сохраняется (SCALES.md §8.1).
+    pub fn set_active(&self, scale_id: &str, active: bool) -> Result<(), DbError> {
+        self.conn
+            .execute(
+                "UPDATE scales SET active = ?2, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+                 WHERE id = ?1",
+                params![scale_id, active as i64],
+            )
+            .map_err(|e| DbError::Sqlite(e.to_string()))?;
+        Ok(())
     }
 }
 
