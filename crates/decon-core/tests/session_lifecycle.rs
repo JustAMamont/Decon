@@ -9,10 +9,11 @@
 
 use decon_core::db;
 use decon_core::db::crypto::{FieldCryptor, derive_key_passphrase};
-use decon_core::db::repo::{EventRepo, SessionRepo, SettingsRepo};
+use decon_core::db::repo::{EventRepo, ScaleRepo, SessionRepo, SettingsRepo};
 use decon_core::model::AppSettings;
 use decon_core::model::event::EventKind;
 use decon_core::model::journal::SessionJournal;
+use decon_core::model::scale::{Phase, Response};
 use decon_core::model::session::{Layer, Session, SessionContext, SessionKind};
 use decon_core::model::settings::Language;
 use std::io::Read;
@@ -25,6 +26,10 @@ fn full_session_lifecycle_roundtrip() {
     // --- Подключение и миграции (как при первом запуске приложения)
     let conn = db::open(&db_path).expect("open");
     db::migrate(&conn).expect("migrate");
+
+    // --- Сидинг дефолтных шкал v1 (первый запуск)
+    let scale_repo = ScaleRepo::new(&conn);
+    scale_repo.seed_defaults().expect("seed scales");
 
     // --- Ключ: режим passphrase (argon2id), как в SPEC §7.2
     let salt = "c2FsdC1zYWx0LXNhbHQtc2FsdA==";
@@ -46,6 +51,22 @@ fn full_session_lifecycle_roundtrip() {
     let session_repo = SessionRepo::new(&conn).with_cryptor(&cryptor);
     session_repo.insert(&session).expect("insert session");
 
+    // --- Pre-замер: 2 слайдера (SCALES.md §2) — до старта таймера
+    let pre_scales = scale_repo.list_active_phase(Phase::Pre).expect("pre list");
+    assert_eq!(pre_scales.len(), 2);
+    let pre_values = [6.5f64, 3.0f64]; // шум высоко, поле сужено
+    let pre_responses: Vec<Response> = pre_scales
+        .iter()
+        .zip(pre_values)
+        .map(|((s, v), val)| {
+            assert!(Response::is_valid_value(val, s.kind));
+            Response::for_session(session_id, v.id, val)
+        })
+        .collect();
+    scale_repo
+        .save_session_responses(&pre_responses)
+        .expect("save pre");
+
     // --- Events: буфер журнала + flush (события с таймкодами)
     let event_repo = EventRepo::new(&conn).with_cryptor(&cryptor);
     let mut journal = SessionJournal::new(session_id);
@@ -57,7 +78,24 @@ fn full_session_lifecycle_roundtrip() {
     let flushed = journal.flush(&event_repo).expect("flush events");
     assert_eq!(flushed, 5);
 
-    // --- Post: завершение + заметка (🔒 поле)
+    // --- Post: завершение + 5 слайдеров (SCALES.md §3) + заметка (🔒)
+    let post_scales = scale_repo
+        .list_active_phase(Phase::Post)
+        .expect("post list");
+    assert_eq!(post_scales.len(), 5);
+    let post_values = [7.0f64, 6.0, 8.5, 6.0, 4.0];
+    let post_responses: Vec<Response> = post_scales
+        .iter()
+        .zip(post_values)
+        .map(|((s, v), val)| {
+            assert!(Response::is_valid_value(val, s.kind));
+            Response::for_session(session_id, v.id, val)
+        })
+        .collect();
+    scale_repo
+        .save_session_responses(&post_responses)
+        .expect("save post");
+
     let note_text = "После 2-й минуты — вспышка равномерности, фон стал цельным. \
                      Личная деталь для проверки шифрования: уникальный маркер Zq71#кси.";
     session.note = Some(note_text.to_string());
@@ -88,6 +126,26 @@ fn full_session_lifecycle_roundtrip() {
     assert_eq!(events[1].t_offset_ms, 45_000);
     assert_eq!(events[1].kind, EventKind::CollapseFocus);
     assert_eq!(events[3].kind, EventKind::ClarityFlash);
+
+    // Ответы: 2 pre + 5 post, roundtrip значений по scale_id
+    let stored_responses = scale_repo
+        .session_responses(&session_id)
+        .expect("responses");
+    assert_eq!(stored_responses.len(), 7);
+    let resp = |sid: &str| -> f64 {
+        stored_responses
+            .iter()
+            .find(|(id, _, _)| id == sid)
+            .map(|(_, _, v)| *v)
+            .unwrap_or(f64::NAN)
+    };
+    assert_eq!(resp("pre.noise"), 6.5);
+    assert_eq!(resp("pre.openness"), 3.0);
+    assert_eq!(resp("post.uniformity"), 7.0);
+    assert_eq!(resp("post.background"), 6.0);
+    assert_eq!(resp("post.depth"), 8.5);
+    assert_eq!(resp("post.stability"), 6.0);
+    assert_eq!(resp("post.dissolution"), 4.0);
 
     // --- Критерий №4: заметки нет в файле БД (поиск по подстроке)
     // WAL мог ещё не флашнуться в основной файл — закрываем чисто

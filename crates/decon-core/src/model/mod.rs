@@ -4,6 +4,7 @@
 
 pub mod event;
 pub mod journal;
+pub mod scale;
 pub mod session;
 pub mod settings;
 
