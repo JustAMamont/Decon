@@ -1,9 +1,15 @@
 name: CI
 
+# Экономный режим (CONVENTIONS.md, правило №8.9): Actions только на границах
+# скоупов. Обычные пуши не запускают CI — полный прогон делает разработчик
+# локально (fmt + clippy + test + gitleaks). Запуск:
+#   - вручную (Actions → Run workflow);
+#   - тег границ скоупа: git tag scope-S1 && git push origin scope-S1.
 on:
+  workflow_dispatch:
   push:
-    branches: [main]
-  pull_request:
+    tags:
+      - "scope-*"
 
 env:
   CARGO_TERM_COLOR: always
