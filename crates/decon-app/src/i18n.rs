@@ -216,6 +216,51 @@ pub enum Str {
     SymbolsLetters,
     /// «Двуцветные»
     SymbolsBicolor,
+    // --- S4: аналитика
+    /// «Аналитика»
+    Analytics,
+    /// «Тренды по шкалам»
+    TrendsTitle,
+    /// «Корреляции условий»
+    CorrelationsTitle,
+    /// «A/B периоды»
+    AbTitle,
+    /// «Экспорт данных»
+    ExportTitle,
+    /// «Сон, ч ↔ качество (Спирмен)»
+    CorrSleep,
+    /// «Кофеин ↔ качество (Спирмен)»
+    CorrCaffeine,
+    /// «Пары: {n}»
+    CorrPairs,
+    /// «Мало данных: сравнение ненадёжно»
+    AbLowSample,
+    /// «A: {ma} (n={na}) → B: {mb} (n={nb})»
+    AbMeans,
+    /// «Видимая значимость p = {p}»
+    AbPValue,
+    /// «Дельта post − pre: {d}»
+    DeltaMean,
+    /// «Сессий с парой замеров: {n}»
+    DeltaN,
+    /// «Экспорт JSON»
+    ExportJson,
+    /// «Экспорт CSV»
+    ExportCsv,
+    /// «Экспортировано»
+    Exported,
+    /// «Остаточный фон: период полураспада {t} мин»
+    CarryoverHalflife,
+    /// «Недостаточно пар (< 5)»
+    CorrInsufficient,
+    /// «Связь: слабая/умеренная/сильная/нет»
+    CorrStrengthWeak,
+    /// «умеренная»
+    CorrStrengthModerate,
+    /// «сильная»
+    CorrStrengthStrong,
+    /// «нет связи»
+    CorrStrengthNone,
 }
 
 impl I18n {
@@ -332,6 +377,28 @@ impl I18n {
             Str::SymbolsDigits => "Цифры",
             Str::SymbolsLetters => "Буквы",
             Str::SymbolsBicolor => "Двуцветные",
+            Str::Analytics => "Аналитика",
+            Str::TrendsTitle => "Тренды по шкалам",
+            Str::CorrelationsTitle => "Корреляции условий",
+            Str::AbTitle => "A/B периоды",
+            Str::ExportTitle => "Экспорт данных",
+            Str::CorrSleep => "Сон, ч ↔ качество (Спирмен)",
+            Str::CorrCaffeine => "Кофеин ↔ качество (Спирмен)",
+            Str::CorrPairs => "Пары: {n}",
+            Str::AbLowSample => "Мало данных: сравнение ненадёжно",
+            Str::AbMeans => "A: {ma} (n={na}) → B: {mb} (n={nb})",
+            Str::AbPValue => "Видимая значимость p = {p}",
+            Str::DeltaMean => "Дельта post − pre: {d}",
+            Str::DeltaN => "Сессий с парой замеров: {n}",
+            Str::ExportJson => "Экспорт JSON",
+            Str::ExportCsv => "Экспорт CSV",
+            Str::Exported => "Экспортировано",
+            Str::CarryoverHalflife => "Остаточный фон: период полураспада {t} мин",
+            Str::CorrInsufficient => "Недостаточно пар (< 5)",
+            Str::CorrStrengthWeak => "слабая",
+            Str::CorrStrengthModerate => "умеренная",
+            Str::CorrStrengthStrong => "сильная",
+            Str::CorrStrengthNone => "нет связи",
         }
     }
 
@@ -437,6 +504,28 @@ impl I18n {
             Str::SymbolsDigits => "Digits",
             Str::SymbolsLetters => "Letters",
             Str::SymbolsBicolor => "Bicolor",
+            Str::Analytics => "Analytics",
+            Str::TrendsTitle => "Scale trends",
+            Str::CorrelationsTitle => "Condition correlations",
+            Str::AbTitle => "A/B periods",
+            Str::ExportTitle => "Data export",
+            Str::CorrSleep => "Sleep, h ↔ quality (Spearman)",
+            Str::CorrCaffeine => "Caffeine ↔ quality (Spearman)",
+            Str::CorrPairs => "Pairs: {n}",
+            Str::AbLowSample => "Little data: comparison unreliable",
+            Str::AbMeans => "A: {ma} (n={na}) → B: {mb} (n={nb})",
+            Str::AbPValue => "Visible significance p = {p}",
+            Str::DeltaMean => "Post − pre delta: {d}",
+            Str::DeltaN => "Sessions with paired measures: {n}",
+            Str::ExportJson => "Export JSON",
+            Str::ExportCsv => "Export CSV",
+            Str::Exported => "Exported",
+            Str::CarryoverHalflife => "Carryover half-life: {t} min",
+            Str::CorrInsufficient => "Insufficient pairs (< 5)",
+            Str::CorrStrengthWeak => "weak",
+            Str::CorrStrengthModerate => "moderate",
+            Str::CorrStrengthStrong => "strong",
+            Str::CorrStrengthNone => "no association",
         }
     }
 }

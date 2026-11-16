@@ -4,6 +4,7 @@
 //! Разбито по смысловым зонам (правило №7): журнал, зонды дня,
 //! периодические инструменты, настройки.
 
+pub mod analytics;
 pub mod journal;
 pub mod probes;
 pub mod settings;
@@ -252,6 +253,8 @@ fn app_shell() -> Element {
                     active: screen == Screen::Tools }
                 nav_button { label: i18n.get(Str::Trainers), target: Screen::Trainers,
                     active: matches!(screen, Screen::Trainers | Screen::TrainerRun) }
+                nav_button { label: i18n.get(Str::Analytics), target: Screen::Analytics,
+                    active: screen == Screen::Analytics }
                 nav_button { label: i18n.get(Str::Settings), target: Screen::Settings,
                     active: screen == Screen::Settings }
             }
@@ -267,6 +270,7 @@ fn app_shell() -> Element {
                 Screen::Settings => rsx! { settings::settings_screen {} },
                 Screen::Trainers => rsx! { trainers::list_screen {} },
                 Screen::TrainerRun => rsx! { trainers::run_screen {} },
+                Screen::Analytics => rsx! { analytics::analytics_screen {} },
             }
             if let Some(msg) = toast {
                 div { class: "toast", "{msg}" }

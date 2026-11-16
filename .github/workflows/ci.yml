@@ -77,6 +77,7 @@ jobs:
         run: |
           cargo bench --bench journal --package decon-core -- --warm-up-time 1 --measurement-time 1
           cargo bench --bench mot --package decon-trainers -- --warm-up-time 1 --measurement-time 1
+          cargo bench --bench analysis --package decon-core -- --warm-up-time 1 --measurement-time 1
 
   gitleaks:
     name: Secret scan

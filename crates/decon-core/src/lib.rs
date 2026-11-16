@@ -11,6 +11,7 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used))]
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
+pub mod analysis;
 pub mod db;
 pub mod model;
 pub mod schedule;
