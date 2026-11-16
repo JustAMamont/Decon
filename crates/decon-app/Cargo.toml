@@ -1,0 +1,21 @@
+[package]
+name = "decon-app"
+description = "Decon desktop application (Dioxus UI)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "decon"
+path = "src/main.rs"
+
+[dependencies]
+decon-core.workspace = true
+decon-trainers.workspace = true
+dioxus = { version = "0.7", features = ["desktop"] }
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile = "3"

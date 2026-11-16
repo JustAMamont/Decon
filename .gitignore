@@ -1,0 +1,40 @@
+# --- Секреты и окружение (правило №5) ---
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+
+# --- Локальные базы данных (данные пользователя, не для репо) ---
+*.db
+*.sqlite
+*.sqlite3
+*.db-wal
+*.db-shm
+
+# --- Артефакты сборки Rust ---
+/target/
+**/*.rs.bk
+
+# --- Dioxus ---
+/dist/
+.dioxus/
+
+# --- Системное ---
+.DS_Store
+Thumbs.db
+
+# --- IDE ---
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# --- Бенчмарки criterion (отчёты локальные) ---
+/criterion/
+**/target/criterion/
+
+# --- Core dumps ---
+core
+core.*
