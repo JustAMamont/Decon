@@ -5,8 +5,8 @@
 //! headless-прогона есть `MemoryStore`. Это держит core синхронным и
 //! тестируемым без D-Bus/Windows-сервисов.
 
-use crate::db::crypto::FieldCryptor;
 use crate::db::DbError;
+use crate::db::crypto::FieldCryptor;
 
 /// Контракт хранилища секрета мастер-ключа.
 ///
@@ -130,7 +130,7 @@ pub fn rotate_notes_key(
 
     // Ключ меняем в keyring только после успешного коммита БД.
     store
-        .save(&new.key_b64())
+        .save(new.key_b64())
         .map_err(|e| DbError::Crypto(e.to_string()))?;
     Ok(n)
 }
@@ -158,7 +158,9 @@ mod tests {
     #[test]
     fn memory_store_roundtrip() {
         let store = MemoryStore::new();
-        store.save("dGVzdC1rZXktdGVzdC1rZXktdGVzdC1rZXktdGVzdA==").unwrap();
+        store
+            .save("dGVzdC1rZXktdGVzdC1rZXktdGVzdC1rZXktdGVzdA==")
+            .unwrap();
         assert_eq!(
             store.load().unwrap().as_deref(),
             Some("dGVzdC1rZXktdGVzdC1rZXktdGVzdC1rZXktdGVzdA==")
@@ -175,7 +177,8 @@ mod tests {
         let old = old_crypto.cryptor();
 
         // Сессия с заметкой
-        let mut session = Session::new(SessionKind::Practice, "2026-11-18T10:00:00.000Z".into(), 10);
+        let mut session =
+            Session::new(SessionKind::Practice, "2026-11-18T10:00:00.000Z".into(), 10);
         session.note = Some("секретная заметка про практику".into());
         let repo = SessionRepo::new(&conn).with_cryptor(old);
         repo.insert(&session).unwrap();
@@ -201,7 +204,10 @@ mod tests {
             .get(&session.id)
             .unwrap()
             .expect("exists");
-        assert_eq!(reloaded.note.as_deref(), Some("секретная заметка про практику"));
+        assert_eq!(
+            reloaded.note.as_deref(),
+            Some("секретная заметка про практику")
+        );
 
         // Старым ключом — не читается (расшифровка честно падает)
         let stored_token: String = conn

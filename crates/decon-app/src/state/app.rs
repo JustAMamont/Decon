@@ -1,19 +1,25 @@
-//! Состояние приложения: машина экранов журнала + живая сессия.
+//! Состояние приложения: машина экранов журнала, зондов и инструментов.
 //!
-//! Поток (ARCHITECTURE.md §4): запуск → pre-замер → экран сессии →
-//! post-замер → сохранение. БД открывается один раз; запись идёт в том же
-//! потоке (WAL + busy_timeout держат короткие транзакции; отдельный поток
-//! записи — когда появятся тренажёры с телеметрией).
+//! Потоки (ARCHITECTURE.md §4–§5): сессия — запуск → pre-замер → экран
+//! практики → post-замер → сохранение; зонды — расписание на день из
+//! планировщика, догоняющие ответы с `delay_minutes`; периодика — FFMQ и
+//! слойная карта. БД открывается один раз; запись в том же потоке
+//! (WAL + busy_timeout держат короткие транзакции; отдельный поток записи
+//! — когда появятся тренажёры с телеметрией).
 
 use crate::i18n::{I18n, Str};
-use decon_core::db;
-use decon_core::db::repo::{EventRepo, ScaleRepo, SessionRepo, SettingsRepo};
+use crate::platform::secret_store::{KeyringBackend, OsKeyringOrMemory};
+use decon_core::db::keyring::NoteCrypto;
+use decon_core::db::repo::{EventRepo, FfmqResult, ScaleRepo, SessionRepo, SettingsRepo};
+use decon_core::db::{self, DbError};
 use decon_core::model::AppSettings;
 use decon_core::model::event::EventKind;
 use decon_core::model::journal::SessionJournal;
+use decon_core::model::probe::Probe;
 use decon_core::model::scale::{Phase, Response, Scale, ScaleVersion};
 use decon_core::model::session::{Layer, Session, SessionContext, SessionKind, now_iso};
 use decon_core::model::settings::Language;
+use decon_core::schedule::DaySchedule;
 use rusqlite::Connection;
 use std::time::Instant;
 use uuid::Uuid;
@@ -31,6 +37,14 @@ pub enum Screen {
     Post,
     /// История сессий.
     History,
+    /// Зонд дня: вопрос из 2 слайдеров + флаг.
+    Probe(Option<Uuid>),
+    /// Список догоняющих зондов.
+    ProbeCatchup,
+    /// Периодические инструменты: FFMQ-импорт, слойная карта.
+    Tools,
+    /// Настройки: зонды, сигналы, язык.
+    Settings,
 }
 
 /// Живая сессия: доменная модель + буфер событий + таймер.
@@ -100,7 +114,8 @@ pub struct ScaleAnswer {
 pub struct App {
     /// Подключение к БД (открыто на старте, живёт до выхода).
     pub conn: Connection,
-    /// Шифровальщик заметок (ключ auto-режима).
+    /// Шифровальщик заметок (ключ auto-режима из keyring).
+    pub note_crypto: NoteCrypto,
     /// Локаль.
     pub i18n: I18n,
     /// Настройки.
@@ -129,6 +144,33 @@ pub struct App {
     pub history: Vec<Session>,
     /// Тост-уведомление (показывается один кадр).
     pub toast: Option<String>,
+    // --- Зонды дня (S2)
+    /// Расписание на сегодня (None — ещё не построено).
+    pub today_plan: Option<DaySchedule>,
+    /// Зонды сегодня.
+    pub today_probes: Vec<Probe>,
+    /// Ответы текущего зонда (экран Probe).
+    pub probe_answers: Vec<ScaleAnswer>,
+    /// Зонд, который отвечается сейчас (экран Probe).
+    pub active_probe: Option<Probe>,
+    // --- Периодика (S2)
+    /// Результаты FFMQ (последние).
+    pub ffqm_results: Vec<FfmqResult>,
+    /// Ответы слойной карты (Layer-фаза, по слоям).
+    pub layer_answers: Vec<ScaleAnswer>,
+    // --- Настройки (S2)
+    /// Черновик окна зондов: начало, `HH:MM`.
+    pub probe_window_start: String,
+    /// Черновик окна зондов: конец.
+    pub probe_window_end: String,
+    /// Черновик: количество зондов.
+    pub probe_count: String,
+    /// Черновик: минимальный интервал, мин.
+    pub probe_min_gap: String,
+    /// Черновик: интервал сигналов сессии, с.
+    pub signal_interval: String,
+    /// Где реально лежит ключ (для статуса в настройках).
+    pub keyring_backend: KeyringBackend,
 }
 
 impl App {
@@ -149,8 +191,26 @@ impl App {
             .map_err(|e| e.to_string())?;
         let settings = SettingsRepo::new(&conn).load().map_err(|e| e.to_string())?;
 
-        Ok(App {
+        // auto-режим (SPEC §7.1): ключ из OS keyring или новый при
+        // первом запуске; headless-окружение — memory-фолбэк.
+        let store = OsKeyringOrMemory::detect();
+        let keyring_backend = store.backend();
+        let note_crypto = NoteCrypto::from_store(&store).map_err(|e| e.to_string())?;
+
+        let mut app = App::skeleton(conn, settings, note_crypto);
+        app.keyring_backend = keyring_backend;
+        // Зонды на сегодня строим сразу (если включены)
+        if app.settings.probe.enabled {
+            let _ = crate::state::probes_flow::rebuild_today_probes(&mut app);
+        }
+        Ok(app)
+    }
+
+    /// Каркас состояния без БД-инициализации (init и init_fallback).
+    fn skeleton(conn: Connection, settings: AppSettings, note_crypto: NoteCrypto) -> Self {
+        App {
             conn,
+            note_crypto,
             i18n: I18n::new(settings.language),
             settings,
             screen: Screen::Setup,
@@ -165,7 +225,25 @@ impl App {
             timer_start: None,
             history: Vec::new(),
             toast: None,
-        })
+            today_plan: None,
+            today_probes: Vec::new(),
+            probe_answers: Vec::new(),
+            active_probe: None,
+            ffqm_results: Vec::new(),
+            layer_answers: Vec::new(),
+            probe_window_start: format!(
+                "{:02}:{:02}",
+                settings.probe.window.start_h, settings.probe.window.start_m
+            ),
+            probe_window_end: format!(
+                "{:02}:{:02}",
+                settings.probe.window.end_h, settings.probe.window.end_m
+            ),
+            probe_count: settings.probe.count.to_string(),
+            probe_min_gap: settings.probe.min_gap_minutes.to_string(),
+            signal_interval: settings.session.signal_interval_s.to_string(),
+            keyring_backend: KeyringBackend::Memory,
+        }
     }
 
     /// Fallback при ошибке инициализации: in-memory БД, чтобы окно
@@ -178,23 +256,9 @@ impl App {
         });
         let _ = db::migrate(&conn);
         let settings = AppSettings::default();
-        App {
-            conn,
-            i18n: I18n::new(settings.language),
-            settings,
-            screen: Screen::Setup,
-            setup_layer: None,
-            setup_technique: String::new(),
-            setup_sleep: String::new(),
-            setup_caffeine: String::new(),
-            running: None,
-            pre_answers: Vec::new(),
-            post_answers: Vec::new(),
-            note_draft: String::new(),
-            timer_start: None,
-            history: Vec::new(),
-            toast: None,
-        }
+        let store = decon_core::db::keyring::MemoryStore::new();
+        let note_crypto = NoteCrypto::from_store(&store).expect("generated key is always valid");
+        App::skeleton(conn, settings, note_crypto)
     }
 
     /// Начать сессию: создать запись, pre-ответы уйти в БД, перейти к Run.
@@ -206,7 +270,7 @@ impl App {
             posture: None,
         };
         // Локальный час для корзины: UTC-час (пилот; TZ-детект — S2).
-        let utc_hour = (unix_now_ms() / 3_600_000 % 24) as u32;
+        let utc_hour = (crate::state::clock::unix_now_ms() / 3_600_000 % 24) as u32;
         let mut session = Session::new(SessionKind::Practice, now_iso(), utc_hour);
         session.set_layer(self.setup_layer);
         let technique = self.setup_technique.trim().to_string();
@@ -282,7 +346,7 @@ impl App {
         Ok(())
     }
 
-    /// Сохранить post-замер и закрыть сессию.
+    /// Сохранить post-замер, зашифрованную заметку и закрыть сессию.
     pub fn save_session(&mut self) -> Result<(), String> {
         let Some(r) = self.running.as_ref() else {
             return Err(self.i18n.get(Str::Error).to_string());
@@ -293,9 +357,24 @@ impl App {
             .iter()
             .map(|a| Response::for_session(sid, a.version.id, a.value))
             .collect();
+        // Заметка шифруется ключом auto-режима (S2: keyring подключён)
+        let note_enc = if self.note_draft.trim().is_empty() {
+            None
+        } else {
+            Some(self.note_crypto.cryptor().encrypt(self.note_draft.trim()))
+        };
         (|| -> Result<(), db::DbError> {
             if !responses.is_empty() {
                 ScaleRepo::new(&self.conn).save_session_responses(&responses)?;
+            }
+            if let Some(token) = &note_enc {
+                self.conn
+                    .execute(
+                        "UPDATE sessions SET note_enc = ?2, updated_at =
+                         strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?1",
+                        rusqlite::params![sid.to_string(), token],
+                    )
+                    .map_err(|e| DbError::Sqlite(e.to_string()))?;
             }
             Ok(())
         })()
@@ -378,13 +457,6 @@ fn data_dir() -> std::path::PathBuf {
         .join(".local")
         .join("share")
         .join("decon")
-}
-
-fn unix_now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
 }
 
 #[cfg(test)]

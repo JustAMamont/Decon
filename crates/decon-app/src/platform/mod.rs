@@ -6,5 +6,3 @@
 //! CI, первый запуск без dbus-сессии).
 
 pub mod secret_store;
-
-pub use secret_store::{OsKeyringOrMemory, detect_keyring_backend};

@@ -1,8 +1,8 @@
 //! Точка входа Decon: desktop-приложение на Dioxus.
 
-mod app;
 mod i18n;
 mod platform;
+mod state;
 mod views;
 
 fn main() {

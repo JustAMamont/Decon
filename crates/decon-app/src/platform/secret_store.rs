@@ -5,7 +5,7 @@
 //! ключ живёт в памяти — заметки этой сессии работают, при следующем
 //! запуске нужен повторный ввод (честное поведение вместо тихой потери).
 
-use decon_core::db::keyring::{MemoryStore, SecretStore, SECRET_NAME};
+use decon_core::db::keyring::{MemoryStore, SECRET_NAME, SecretStore};
 
 /// Бэкенд хранилища ключа (для диагностики в настройках).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -14,18 +14,6 @@ pub enum KeyringBackend {
     OsKeyring,
     /// Память процесса (нет системного сервиса).
     Memory,
-}
-
-/// Проверить, доступен ли системный keyring, не трогая его данных.
-pub fn detect_keyring_backend() -> KeyringBackend {
-    match keyring::Entry::new("decon", "probe") {
-        Ok(entry) => match entry.get_password() {
-            Ok(_) | Err(keyring::Error::NoEntry) => KeyringBackend::OsKeyring,
-            // NoStorageAccess и прочие — сервиса нет
-            Err(_) => KeyringBackend::Memory,
-        },
-        Err(_) => KeyringBackend::Memory,
-    }
 }
 
 /// Хранилище: OS keyring, при недоступности — память.
@@ -77,9 +65,7 @@ impl SecretStore for OsKeyringOrMemory {
 
     fn save(&self, key: &str) -> Result<(), String> {
         match &self.os {
-            Some(entry) => entry
-                .set_password(key)
-                .map_err(|e| format!("keyring: {e}")),
+            Some(entry) => entry.set_password(key).map_err(|e| format!("keyring: {e}")),
             None => self.memory.save(key),
         }
     }
@@ -105,7 +91,12 @@ mod tests {
 
     #[test]
     fn backend_detection_never_panics() {
-        // Просто детект без паник; реальный бэкенд зависит от окружения
-        let _ = detect_keyring_backend();
+        // Детект через экземпляр: паник нет, бэкенд легитимный
+        let store = OsKeyringOrMemory::detect();
+        let backend = store.backend();
+        assert!(
+            backend == KeyringBackend::OsKeyring || backend == KeyringBackend::Memory,
+            "бэкенд из допустимого набора"
+        );
     }
 }

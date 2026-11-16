@@ -79,6 +79,67 @@ pub enum Str {
     SecondsShort,
     /// «Ошибка»
     Error,
+    // --- S2: зонды
+    /// «Зонд дня»
+    ProbeTitle,
+    /// «Зонды дня»
+    ProbeList,
+    /// «Догоняющий ответ: плановое время»
+    ProbeCatchupHint,
+    /// «Ответить сейчас»
+    AnswerNow,
+    /// «Завершён»
+    ProbeDone,
+    /// «Пропустить»
+    Skip,
+    // --- S2: инструменты
+    /// «Инструменты»
+    Tools,
+    /// «Пройдите опросник и введите факторные баллы (0–100)»
+    FfmqHint,
+    /// «История FFMQ»
+    FfmqHistory,
+    /// «Наблюдение»
+    FfmqObserving,
+    /// «Описание»
+    FfmqDescribing,
+    /// «Действие с осознаванием»
+    FfmqActing,
+    /// «Нереактивность»
+    FfmqNonreactivity,
+    /// «Неосуждение»
+    FfmqNonjudging,
+    /// «Слойная карта»
+    LayerMap,
+    /// «Оцените доступность и удержание каждого слоя за 2 недели»
+    LayerMapHint,
+    // --- S2: настройки
+    /// «Настройки»
+    Settings,
+    /// «Начало окна зондов (ЧЧ:ММ)»
+    ProbeWindowStart,
+    /// «Конец окна зондов (ЧЧ:ММ)»
+    ProbeWindowEnd,
+    /// «Зондов в день»
+    ProbeCount,
+    /// «Мин. интервал, мин»
+    ProbeMinGap,
+    /// «Интервал сигналов, с»
+    SignalInterval,
+    /// «Зонды включены»
+    ProbesEnabled,
+    /// «вкл»
+    On,
+    /// «выкл»
+    Off,
+    /// «Язык»
+    Language,
+    /// «Хранилище ключа»
+    KeyringStatus,
+    /// «системный keyring»
+    KeyringOs,
+    /// «память (нет сервиса)»
+    KeyringMemory,
 }
 
 impl I18n {
@@ -127,6 +188,37 @@ impl I18n {
             Str::MinutesShort => "мин",
             Str::SecondsShort => "сек",
             Str::Error => "Ошибка",
+            Str::ProbeTitle => "Зонд дня",
+            Str::ProbeList => "Зонды дня",
+            Str::ProbeCatchupHint => "Догоняющий ответ — плановое время",
+            Str::AnswerNow => "Ответить сейчас",
+            Str::ProbeDone => "Завершён",
+            Str::Skip => "Пропустить",
+            Str::Tools => "Инструменты",
+            Str::FfmqHint => "Пройдите опросник вне Decon и введите факторные баллы (0–100)",
+            Str::FfmqHistory => "История FFMQ",
+            Str::FfmqObserving => "Наблюдение",
+            Str::FfmqDescribing => "Описание",
+            Str::FfmqActing => "Действие с осознаванием",
+            Str::FfmqNonreactivity => "Нереактивность",
+            Str::FfmqNonjudging => "Неосуждение",
+            Str::LayerMap => "Слойная карта",
+            Str::LayerMapHint => {
+                "Оцените доступность и удержание каждого слоя за последние 2 недели"
+            }
+            Str::Settings => "Настройки",
+            Str::ProbeWindowStart => "Начало окна зондов (ЧЧ:ММ)",
+            Str::ProbeWindowEnd => "Конец окна зондов (ЧЧ:ММ)",
+            Str::ProbeCount => "Зондов в день",
+            Str::ProbeMinGap => "Мин. интервал, мин",
+            Str::SignalInterval => "Интервал сигналов, с",
+            Str::ProbesEnabled => "Зонды",
+            Str::On => "вкл",
+            Str::Off => "выкл",
+            Str::Language => "Язык",
+            Str::KeyringStatus => "Хранилище ключа",
+            Str::KeyringOs => "системный keyring",
+            Str::KeyringMemory => "память (нет сервиса)",
         }
     }
 
@@ -162,6 +254,39 @@ impl I18n {
             Str::MinutesShort => "min",
             Str::SecondsShort => "sec",
             Str::Error => "Error",
+            Str::ProbeTitle => "Day probe",
+            Str::ProbeList => "Day probes",
+            Str::ProbeCatchupHint => "Catch-up answer — scheduled at",
+            Str::AnswerNow => "Answer now",
+            Str::ProbeDone => "Done",
+            Str::Skip => "Skip",
+            Str::Tools => "Tools",
+            Str::FfmqHint => {
+                "Take the questionnaire outside Decon, then enter factor scores (0–100)"
+            }
+            Str::FfmqHistory => "FFMQ history",
+            Str::FfmqObserving => "Observing",
+            Str::FfmqDescribing => "Describing",
+            Str::FfmqActing => "Acting with awareness",
+            Str::FfmqNonreactivity => "Non-reactivity",
+            Str::FfmqNonjudging => "Non-judging",
+            Str::LayerMap => "Layer map",
+            Str::LayerMapHint => {
+                "Rate availability and holding of each layer over the last 2 weeks"
+            }
+            Str::Settings => "Settings",
+            Str::ProbeWindowStart => "Probe window start (HH:MM)",
+            Str::ProbeWindowEnd => "Probe window end (HH:MM)",
+            Str::ProbeCount => "Probes per day",
+            Str::ProbeMinGap => "Min gap, minutes",
+            Str::SignalInterval => "Signal interval, s",
+            Str::ProbesEnabled => "Probes",
+            Str::On => "on",
+            Str::Off => "off",
+            Str::Language => "Language",
+            Str::KeyringStatus => "Key storage",
+            Str::KeyringOs => "system keyring",
+            Str::KeyringMemory => "memory (no service)",
         }
     }
 }
