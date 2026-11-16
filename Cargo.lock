@@ -941,6 +941,7 @@ name = "decon-app"
 version = "0.1.0"
 dependencies = [
  "decon-core",
+ "decon-trainers",
  "dioxus",
  "keyring",
  "notify-rust",
@@ -982,6 +983,7 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+ "uuid",
 ]
 
 [[package]]

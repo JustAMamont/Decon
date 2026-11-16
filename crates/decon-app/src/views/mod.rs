@@ -8,6 +8,7 @@ pub mod journal;
 pub mod probes;
 pub mod settings;
 pub mod tools;
+pub mod trainers;
 pub mod widgets;
 
 use crate::i18n::{I18n, Str};
@@ -249,6 +250,8 @@ fn app_shell() -> Element {
                     active: matches!(screen, Screen::Probe(_) | Screen::ProbeCatchup) }
                 nav_button { label: i18n.get(Str::Tools), target: Screen::Tools,
                     active: screen == Screen::Tools }
+                nav_button { label: i18n.get(Str::Trainers), target: Screen::Trainers,
+                    active: matches!(screen, Screen::Trainers | Screen::TrainerRun) }
                 nav_button { label: i18n.get(Str::Settings), target: Screen::Settings,
                     active: screen == Screen::Settings }
             }
@@ -262,6 +265,8 @@ fn app_shell() -> Element {
                 Screen::ProbeCatchup => rsx! { probes::catchup_screen {} },
                 Screen::Tools => rsx! { tools::tools_screen {} },
                 Screen::Settings => rsx! { settings::settings_screen {} },
+                Screen::Trainers => rsx! { trainers::list_screen {} },
+                Screen::TrainerRun => rsx! { trainers::run_screen {} },
             }
             if let Some(msg) = toast {
                 div { class: "toast", "{msg}" }

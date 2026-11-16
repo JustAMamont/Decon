@@ -74,7 +74,9 @@ jobs:
       # явно: `cargo bench -p crate` прогоняет и lib-тесты, которые не
       # понимают флаги criterion. Новый бенч — добавить сюда же.
       - name: Run benchmarks (smoke)
-        run: cargo bench --bench journal --package decon-core -- --warm-up-time 1 --measurement-time 1
+        run: |
+          cargo bench --bench journal --package decon-core -- --warm-up-time 1 --measurement-time 1
+          cargo bench --bench mot --package decon-trainers -- --warm-up-time 1 --measurement-time 1
 
   gitleaks:
     name: Secret scan

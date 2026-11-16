@@ -47,6 +47,10 @@ pub enum Screen {
     Tools,
     /// Настройки: зонды, сигналы, язык.
     Settings,
+    /// Список тренажёров (S3) — запуск Шульте/MOT.
+    Trainers,
+    /// Идёт тренажёр (S3).
+    TrainerRun,
 }
 
 /// Интервал стрим-флаша событий живой сессии (S2.5): буфер льётся в БД
@@ -118,6 +122,31 @@ impl RunningSession {
         }
         Ok(n)
     }
+}
+
+/// Идущий тренажёр (S3): движок + момент старта прогона.
+///
+/// Время считает UI-поток (`started` — Instant старта), движкам
+/// передаются готовые миллисекунды: это держит движки чистыми от
+/// часов и тестируемыми (детерминизм по сиду не зависит от времени
+/// суток).
+pub struct ActiveTrainer {
+    /// Какой движок идёт.
+    pub engine: TrainerEngine,
+    /// Старт прогона (реальное время, для метрик).
+    pub started: Instant,
+    /// Время прошлого тика MOT (для dt).
+    pub last_tick: Instant,
+}
+
+/// Движки тренажёров (S3): обёртка над decon-trainers без рендера.
+/// MOT в Box: SoA-буферы на 32 объекта (~1.5 КБ) против ~64 Б у Шульте;
+/// вариантов будет больше в S5 — enum остаётся компактным.
+pub enum TrainerEngine {
+    /// Таблицы Шульте.
+    Schulte(decon_trainers::schulte::Schulte),
+    /// Multiple object tracking.
+    Mot(Box<decon_trainers::mot::Mot>),
 }
 
 /// Ответ по шкале на экране (значение слайдера).
@@ -196,6 +225,13 @@ pub struct App {
     pub keyring_backend: KeyringBackend,
     /// Автозапуск фактически зарегистрирован в ОС (кэш, S2.5).
     pub autostart_actual: bool,
+    // --- Тренажёры (S3)
+    /// Идёт ли сейчас тренажёр (движок + момент старта для метрик).
+    pub active_trainer: Option<ActiveTrainer>,
+    /// Стартовый сид последнего прогона (для повтора/отладки).
+    pub trainer_seed: u64,
+    /// Результат последнего завершённого прогона (тост на экране).
+    pub trainer_summary: Option<String>,
 }
 
 impl App {
@@ -274,6 +310,10 @@ impl App {
             // кэшируется при старте и обновляется кнопкой в настройках —
             // reg query/проверка файла не выполняется на каждом рендере.
             autostart_actual: crate::platform::autostart::is_enabled(),
+            // Тренажёры (S3): сид — из времени, прогоны стартуют из UI.
+            active_trainer: None,
+            trainer_seed: 0,
+            trainer_summary: None,
             keyring_backend: KeyringBackend::Memory,
         }
     }

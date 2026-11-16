@@ -161,6 +161,61 @@ pub enum Str {
     TestSound,
     /// «Сессия прервана (данные сохранены)»
     SessionInterrupted,
+    // --- S3: тренажёры
+    /// «Тренажёры»
+    Trainers,
+    /// «Таблицы Шульте»
+    SchulteTitle,
+    /// «Multiple Object Tracking»
+    MotTitle,
+    /// «Прокси-приборы внимания: результат пишется в общий журнал»
+    TrainersHint,
+    /// «Режим»
+    TrainerMode,
+    /// «Классика»
+    SchulteClassic,
+    /// «Поле (фиксация в центре)»
+    SchulteField,
+    /// «дКВ (расфокус)»
+    SchulteDkv,
+    /// «Сетка»
+    SchulteGrid,
+    /// «Найдите числа по порядку»
+    SchulteInstruction,
+    /// «Ищите: {n}» — текущее число
+    SchulteFindNext,
+    /// «Тапайте по целям»
+    MotInstruction,
+    /// «Запомните подсвеченные объекты»
+    MotCueHint,
+    /// «Отслеживайте их движением глаз»
+    MotMotionHint,
+    /// «Выберите подсвеченные в начале»
+    MotAnswerHint,
+    /// «Целей»
+    MotTargets,
+    /// «Дистракторов»
+    MotDistractors,
+    /// «Скорость»
+    MotSpeed,
+    /// «Готово»
+    TrainerDone,
+    /// «Ошибок: {n}»
+    TrainerErrors,
+    /// «Время: {t}»
+    TrainerTime,
+    /// «Корректных: {p}%»
+    TrainerCorrectPct,
+    /// «Результат сохранён в журнал»
+    TrainerSaved,
+    /// «Символы»
+    SchulteSymbols,
+    /// «Цифры»
+    SymbolsDigits,
+    /// «Буквы»
+    SymbolsLetters,
+    /// «Двуцветные»
+    SymbolsBicolor,
 }
 
 impl I18n {
@@ -250,6 +305,33 @@ impl I18n {
             Str::ShowWindowOnStart => "Показывать окно при запуске",
             Str::TestSound => "Тест звука",
             Str::SessionInterrupted => "Сессия прервана (данные сохранены)",
+            Str::Trainers => "Тренажёры",
+            Str::SchulteTitle => "Таблицы Шульте",
+            Str::MotTitle => "Multiple Object Tracking",
+            Str::TrainersHint => "Прокси-приборы внимания: результат пишется в общий журнал",
+            Str::TrainerMode => "Режим",
+            Str::SchulteClassic => "Классика",
+            Str::SchulteField => "Поле (фиксация в центре)",
+            Str::SchulteDkv => "дКВ (расфокус)",
+            Str::SchulteGrid => "Сетка",
+            Str::SchulteInstruction => "Найдите числа по порядку",
+            Str::SchulteFindNext => "Ищите: {n}",
+            Str::MotInstruction => "Тапайте по целям",
+            Str::MotCueHint => "Запомните подсвеченные объекты",
+            Str::MotMotionHint => "Отслеживайте их движением глаз",
+            Str::MotAnswerHint => "Выберите подсвеченные в начале",
+            Str::MotTargets => "Целей",
+            Str::MotDistractors => "Дистракторов",
+            Str::MotSpeed => "Скорость",
+            Str::TrainerDone => "Готово",
+            Str::TrainerErrors => "Ошибок: {n}",
+            Str::TrainerTime => "Время: {t}",
+            Str::TrainerCorrectPct => "Корректных: {p}%",
+            Str::TrainerSaved => "Результат сохранён в журнал",
+            Str::SchulteSymbols => "Символы",
+            Str::SymbolsDigits => "Цифры",
+            Str::SymbolsLetters => "Буквы",
+            Str::SymbolsBicolor => "Двуцветные",
         }
     }
 
@@ -328,6 +410,33 @@ impl I18n {
             Str::ShowWindowOnStart => "Show window on launch",
             Str::TestSound => "Test sound",
             Str::SessionInterrupted => "Session interrupted (data saved)",
+            Str::Trainers => "Trainers",
+            Str::SchulteTitle => "Schulte tables",
+            Str::MotTitle => "Multiple Object Tracking",
+            Str::TrainersHint => "Attention proxy instruments: results go to the common journal",
+            Str::TrainerMode => "Mode",
+            Str::SchulteClassic => "Classic",
+            Str::SchulteField => "Field (center fixation)",
+            Str::SchulteDkv => "Open monitoring (defocus)",
+            Str::SchulteGrid => "Grid",
+            Str::SchulteInstruction => "Find the numbers in order",
+            Str::SchulteFindNext => "Find: {n}",
+            Str::MotInstruction => "Tap the targets",
+            Str::MotCueHint => "Memorize the highlighted objects",
+            Str::MotMotionHint => "Track them with your eyes",
+            Str::MotAnswerHint => "Select the ones highlighted at the start",
+            Str::MotTargets => "Targets",
+            Str::MotDistractors => "Distractors",
+            Str::MotSpeed => "Speed",
+            Str::TrainerDone => "Done",
+            Str::TrainerErrors => "Errors: {n}",
+            Str::TrainerTime => "Time: {t}",
+            Str::TrainerCorrectPct => "Correct: {p}%",
+            Str::TrainerSaved => "Result saved to journal",
+            Str::SchulteSymbols => "Symbols",
+            Str::SymbolsDigits => "Digits",
+            Str::SymbolsLetters => "Letters",
+            Str::SymbolsBicolor => "Bicolor",
         }
     }
 }
