@@ -1,23 +1,29 @@
 //! Экран аналитики (S4): тренды, корреляции, A/B-периоды, экспорт.
 //!
 //! Тонкий слой (правило №7.4): расчёты — `decon_core::analysis`,
-//! здесь только сбор данных (SQL через стейт) и отображение.
-//! Тренды — текстовая sparkline-строка (без web-компонентов), графики
-//! SVG — следующий шаг после пилота.
+//! здесь только сбор данных (SQL) и отображение. Паттерн как у
+//! истории: снимок собирается при переключении экрана
+//! (`App::reload_analytics` из навигации) и по кнопке «Обновить»;
+//! экран только читает `app.analytics`. Паник нет — ошибка сборки
+//! деградирует в пустые состояния (правило №1.5).
+//!
+//! Тренды — текстовая sparkline (блоки Unicode); полноценная отрисовка
+//! графиков — после пилота.
 
 use crate::i18n::{I18n, Str};
-use crate::state::app::App;
 use crate::views::AppState;
 use decon_core::analysis::correlation::{CorrKind, RankBuf, correlation_missing};
 use decon_core::analysis::delta::{Delta, delta_summary, session_delta};
 use decon_core::analysis::export::{export_csv, export_json, to_json_string};
 use decon_core::analysis::n_of_1::DEFAULT_PERMUTATIONS;
 use decon_core::analysis::trends::{sma, split_by_version};
+use decon_core::db::repo::scale_repo::SeriesPoint;
 use dioxus::prelude::*;
+use rusqlite::Connection;
 
 /// Один «предрасчёт» аналитики: собирается одним проходом по БД при
-/// входе на экран (кнопка «Обновить»), не на каждый рендер.
-#[derive(Clone)]
+/// входе на экран, не на каждый рендер.
+#[derive(Clone, Default)]
 pub struct AnalyticsSnapshot {
     /// Тренд post.uniformity: SMA-7 значений (для sparkline).
     pub uniformity_sma: Vec<f64>,
@@ -33,9 +39,12 @@ pub struct AnalyticsSnapshot {
     pub quality_series: Vec<f64>,
 }
 
-/// Собрать снимок данных аналитики из БД (один проход SQL).
-pub fn collect_snapshot(app: &App) -> AnalyticsSnapshot {
-    let conn = &app.conn;
+/// Собрать снимок данных аналитики из БД. Ошибки SQL возвращаются
+/// вызывающему (`App::reload_analytics`), пустая база — валидный
+/// пустой снимок, а не ошибка.
+pub fn collect_snapshot(conn: &Connection) -> Result<AnalyticsSnapshot, String> {
+    let mut snap = AnalyticsSnapshot::default();
+
     // Ряд post.uniformity с контекстом сессий
     let mut stmt = conn
         .prepare(
@@ -47,10 +56,7 @@ pub fn collect_snapshot(app: &App) -> AnalyticsSnapshot {
              WHERE sc.id = 'post.uniformity' AND r.deleted_at IS NULL
              ORDER BY r.answered_at",
         )
-        .expect("sql: series");
-    let mut quality_series = Vec::new();
-    let mut sleep_vs_quality: (Vec<Option<f64>>, Vec<Option<f64>>) = (Vec::new(), Vec::new());
-    let mut caffeine_vs_quality: (Vec<Option<f64>>, Vec<Option<f64>>) = (Vec::new(), Vec::new());
+        .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], |row| {
             Ok((
@@ -59,14 +65,14 @@ pub fn collect_snapshot(app: &App) -> AnalyticsSnapshot {
                 row.get::<_, Option<i64>>(2)?,
             ))
         })
-        .expect("sql: rows");
+        .map_err(|e| e.to_string())?;
     for row in rows {
-        let (value, sleep, caffeine) = row.expect("row");
-        quality_series.push(value);
-        sleep_vs_quality.0.push(sleep);
-        sleep_vs_quality.1.push(Some(value));
-        caffeine_vs_quality.0.push(caffeine.map(|c| c as f64));
-        caffeine_vs_quality.1.push(Some(value));
+        let (value, sleep, caffeine) = row.map_err(|e| e.to_string())?;
+        snap.quality_series.push(value);
+        snap.sleep_vs_quality.0.push(sleep);
+        snap.sleep_vs_quality.1.push(Some(value));
+        snap.caffeine_vs_quality.0.push(caffeine.map(|c| c as f64));
+        snap.caffeine_vs_quality.1.push(Some(value));
     }
 
     // Pre/post пары по сессиям (pre.noise → post.uniformity)
@@ -83,62 +89,56 @@ pub fn collect_snapshot(app: &App) -> AnalyticsSnapshot {
              GROUP BY s.id
              ORDER BY s.started_at",
         )
-        .expect("sql: deltas");
-    let mut delta = Vec::new();
+        .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], |row| {
             Ok((row.get::<_, Option<f64>>(1)?, row.get::<_, Option<f64>>(2)?))
         })
-        .expect("sql: delta rows");
+        .map_err(|e| e.to_string())?;
     for row in rows {
-        let (pre, post) = row.expect("row");
+        let (pre, post) = row.map_err(|e| e.to_string())?;
         if let Some(d) = session_delta(pre, post) {
-            delta.push(d);
+            snap.delta.push(d);
         }
     }
 
-    // SMA по тренду
-    let series_points: Vec<decon_core::db::repo::scale_repo::SeriesPoint> = conn
-        .prepare(
-            "SELECT r.answered_at, r.value, r.delay_minutes, sv.version
-             FROM responses r
-             JOIN scale_versions sv ON sv.id = r.scale_version_id
-             JOIN scales sc ON sc.id = sv.scale_id
-             WHERE sc.id = 'post.uniformity' AND r.deleted_at IS NULL
-             ORDER BY r.answered_at",
-        )
-        .expect("sql: trend")
-        .query_map([], |row| {
-            Ok(decon_core::db::repo::scale_repo::SeriesPoint {
-                answered_at: row.get(0)?,
-                value: row.get(1)?,
-                delay_minutes: row.get(2)?,
-                version: row.get(3)?,
+    // Ряд для SMA (с версиями формулировок — сегментация)
+    let series: Vec<SeriesPoint> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT r.answered_at, r.value, r.delay_minutes, sv.version
+                 FROM responses r
+                 JOIN scale_versions sv ON sv.id = r.scale_version_id
+                 JOIN scales sc ON sc.id = sv.scale_id
+                 WHERE sc.id = 'post.uniformity' AND r.deleted_at IS NULL
+                 ORDER BY r.answered_at",
+            )
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(SeriesPoint {
+                    answered_at: row.get(0)?,
+                    value: row.get(1)?,
+                    delay_minutes: row.get(2)?,
+                    version: row.get(3)?,
+                })
             })
-        })
-        .expect("sql: trend rows")
-        .collect::<Result<_, _>>()
-        .expect("trend collect");
-    let segments = split_by_version(&series_points);
-    let mut uniformity_sma = Vec::new();
+            .map_err(|e| e.to_string())?;
+        rows.collect::<Result<_, _>>().map_err(|e| e.to_string())?
+    };
+    snap.uniformity_n = series.len();
     // SMA по последнему сегменту (текущая формулировка)
-    if let Some(last) = segments.last() {
+    if let Some(last) = split_by_version(&series).last() {
         let mut out = Vec::new();
         sma(&last.points, 7, &mut out);
-        uniformity_sma = out.into_iter().map(|t| t.value).collect();
+        snap.uniformity_sma = out.into_iter().map(|t| t.value).collect();
     }
 
-    AnalyticsSnapshot {
-        uniformity_sma,
-        uniformity_n: series_points.len(),
-        delta,
-        sleep_vs_quality,
-        caffeine_vs_quality,
-        quality_series,
-    }
+    Ok(snap)
 }
 
 /// Текстовая sparkline: Unicode-блоки ▁▂▃▄▅▆▇█ по бинам 0..10.
+/// Чистая функция — тестируется без UI.
 pub fn sparkline(values: &[f64], out: &mut String) {
     out.clear();
     const BLOCKS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
@@ -151,23 +151,17 @@ pub fn sparkline(values: &[f64], out: &mut String) {
 }
 
 /// Экран аналитики: тренды, корреляции, A/B, экспорт.
+///
+/// Данные читаются из `app.analytics` (снимок собирает навигация при
+/// входе на экран и кнопка «Обновить») — экран сам в БД не ходит.
 pub fn analytics_screen() -> Element {
     let mut state = use_context::<Signal<AppState>>();
     let lang = state.read().app.lang();
     let i18n = I18n::new(lang);
 
-    // Снимок пересчитывается по кнопке (не на каждый рендер — правило
-    // тонкого UI). Первый вход — сразу считаем.
-    let mut snapshot = use_signal(|| Option::<AnalyticsSnapshot>::None);
-    if snapshot.read().is_none() {
-        let s = state.read();
-        let snap = collect_snapshot(&s.app);
-        snapshot.set(Some(snap));
-    }
-
-    let Some(snap) = snapshot.read().clone() else {
-        return rsx! { div {} };
-    };
+    // Снимок: None при первом входе до сборки или после ошибки сборки —
+    // показываем пустые состояния, не паникуем.
+    let snap = state.read().app.analytics.clone().unwrap_or_default();
 
     // --- Корреляции (Спирмен)
     let mut buf = RankBuf::new();
@@ -195,7 +189,7 @@ pub fn analytics_screen() -> Element {
     // --- Дельты
     let dsum = delta_summary(&snap.delta);
 
-    // Sparkline считается до rsx (в rsx нельзя объявлять let)
+    // Sparkline и форматирование — до rsx (внутри только элементы)
     let mut spark = String::new();
     sparkline(&snap.uniformity_sma, &mut spark);
 
@@ -293,7 +287,6 @@ pub fn analytics_screen() -> Element {
             button {
                 onclick: move |_| {
                     let outcome: Result<Vec<(String, String)>, String> = {
-                        #[allow(clippy::type_complexity)]
                         let s = state.read();
                         export_csv(&s.app.conn, false)
                             .map(|files| {
@@ -331,7 +324,14 @@ pub fn analytics_screen() -> Element {
             }
             button {
                 onclick: move |_| {
-                    snapshot.set(None); // пересбор на следующем рендере
+                    // Пересбор снимка по кнопке (ошибка — в тост, не паника)
+                    let outcome = {
+                        let mut s = state.write();
+                        s.app.reload_analytics()
+                    };
+                    if let Err(e) = outcome {
+                        state.write().error = Some(e);
+                    }
                 },
                 {i18n.get(Str::TrainerDone)}
             }
@@ -354,13 +354,107 @@ fn corr_row(
         "strong" => i18n.get(Str::CorrStrengthStrong),
         _ => i18n.get(Str::CorrStrengthNone),
     };
+    let rho = if corr.rho.is_nan() {
+        "—".to_string()
+    } else {
+        format!("{:+.2}", corr.rho)
+    };
+    let pairs = i18n.get(Str::CorrPairs).replace("{n}", &corr.n.to_string());
     rsx! {
         p { style: "margin: 4px 0;",
             {label}
             ": ρ = "
-            { if corr.rho.is_nan() { "—".to_string() } else { format!("{:+.2}", corr.rho) } }
+            {rho}
             " ({strength}) · "
-            {i18n.get(Str::CorrPairs).replace("{n}", &corr.n.to_string())}
+            {pairs}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use decon_core::db::{self, open_in_memory};
+
+    fn seeded() -> Connection {
+        let conn = open_in_memory().unwrap();
+        db::migrate(&conn).unwrap();
+        db::repo::ScaleRepo::new(&conn).seed_defaults().unwrap();
+        conn
+    }
+
+    /// Регрессия скриншота 2026-11-17: экран аналитики паниковал на
+    /// пустой базе (`expect` в SQL-обвязке). Снимок обязан собираться
+    /// без паник на пустой и наполненной базе.
+    #[test]
+    fn snapshot_empty_db_no_panic() {
+        let conn = seeded();
+        let snap = collect_snapshot(&conn).unwrap();
+        assert_eq!(snap.uniformity_n, 0);
+        assert!(snap.quality_series.is_empty());
+        assert!(snap.delta.is_empty());
+        assert!(snap.uniformity_sma.is_empty());
+        // Пустые ряды → корреляции NaN, экран показывает «—»
+        let mut buf = RankBuf::new();
+        let c = correlation_missing(
+            &snap.sleep_vs_quality.0,
+            &snap.sleep_vs_quality.1,
+            &mut buf,
+            CorrKind::Spearman,
+        );
+        assert_eq!(c.n, 0);
+        assert!(c.rho.is_nan());
+        // sparkline на пустом ряду — пустая строка, не паника
+        let mut out = String::new();
+        sparkline(&snap.uniformity_sma, &mut out);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn snapshot_populated_db() {
+        let conn = seeded();
+        // Сессия с pre/post парой
+        conn.execute(
+            "INSERT INTO sessions (id, kind, started_at, updated_at)
+             VALUES ('s1','practice','2026-11-01T10:00:00Z','2026-11-01T10:00:00Z')",
+            [],
+        )
+        .unwrap();
+        let (sv_pre, sv_post): (String, String) = conn
+            .query_row(
+                "SELECT
+                   (SELECT sv.id FROM scale_versions sv JOIN scales s ON s.id = sv.scale_id
+                    WHERE s.id = 'pre.noise' LIMIT 1),
+                 (SELECT sv.id FROM scale_versions sv JOIN scales s ON s.id = sv.scale_id
+                    WHERE s.id = 'post.uniformity' LIMIT 1)",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        for (id, sv, val) in [("r1", &sv_pre, 4.0), ("r2", &sv_post, 8.0)] {
+            conn.execute(
+                "INSERT INTO responses (id, session_id, scale_version_id, value, answered_at, updated_at)
+                 VALUES (?1,'s1',?2,?3,'2026-11-01T10:20:00Z','2026-11-01T10:20:00Z')",
+                rusqlite::params![id, sv, val],
+            )
+            .unwrap();
+        }
+        let snap = collect_snapshot(&conn).unwrap();
+        assert_eq!(snap.uniformity_n, 1);
+        assert_eq!(snap.quality_series, vec![8.0]);
+        assert_eq!(snap.delta.len(), 1);
+        assert_eq!(snap.delta[0].change, 4.0);
+        assert_eq!(snap.uniformity_sma, vec![8.0]); // одно окно — само значение
+    }
+
+    #[test]
+    fn sparkline_bins() {
+        let mut out = String::new();
+        sparkline(&[0.0], &mut out);
+        assert_eq!(out, "▁");
+        sparkline(&[10.0], &mut out);
+        assert_eq!(out, "█");
+        sparkline(&[5.0], &mut out);
+        assert_eq!(out, "▅"); // 5/10*7=3.5 → round 4 → ▅
     }
 }

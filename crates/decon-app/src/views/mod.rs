@@ -290,35 +290,57 @@ fn play_alert_sound(app: &crate::state::app::App) {
 }
 
 /// Трей: меню «Открыть / Выход» (S2.5). Регистрируется один раз на
-/// монтировании app_shell (use_hook), не на каждом рендере — иначе
-/// плодятся дубли иконки и обработчиков; события меню — здесь же.
+/// монтировании app_shell, не на каждом рендере — иначе плодятся дубли
+/// иконки и обработчиков.
+///
+/// Регрессия 2026-11-17 (пустой экран «Encountered panic: Any { .. }»):
+/// внутри `use_hook`-замыкания вызывались `use_context` и
+/// `use_tray_menu_event_handler` — оба сами hooks, hook-в-hook
+/// паниковал «The hook list is already borrowed» (Linux, dioxus 0.7).
+/// Плюс `init_tray_icon` паникует без libappindicator. Оба вызова
+/// вынесены: контекст берётся до hook, обработчик меню — через
+/// `MenuEvent`-подписку tray-icon без dioxus-hooks.
 fn use_tray() {
-    use_hook(|| {
+    // Hook-вызовы — только здесь, на верхнем уровне компонента:
+    // сначала контекст, потом use_hook с чистым замыканием.
+    let _state = use_context::<Signal<AppState>>();
+    use_hook(move || {
         use dioxus::desktop::muda::accelerator::Accelerator;
         use dioxus::desktop::trayicon::init_tray_icon;
-        use dioxus::desktop::use_tray_menu_event_handler;
         use tray_icon::menu::{Menu, MenuEvent, MenuItem};
 
-        // Меню: Открыть / Выход. MenuId сравнивается с &str напрямую.
+        // Трей опционален: на минимальных Linux без
+        // libayatana-appindicator init_tray_icon паникует
+        // (libappindicator-sys) и уносит весь UI. Зонд dlopen до init;
+        // без библиотеки живём без трея (закрытие окна = скрытие,
+        // выход — по сигналу ОС).
+        if !crate::platform::tray::appindicator_available() {
+            eprintln!("tray unavailable (no appindicator library) — running without tray");
+            return;
+        }
         let open = MenuItem::with_id("open", "Открыть Decon", true, None::<Accelerator>);
         let quit = MenuItem::with_id("quit", "Выход", true, None::<Accelerator>);
         let menu = Menu::new();
         let _ = menu.append_items(&[&open, &quit]);
-        let _ = init_tray_icon(menu, crate::platform::tray::tray_icon_rgba().ok());
+        let icon = crate::platform::tray::tray_icon_rgba().ok();
+        let _ = init_tray_icon(menu, icon);
 
-        // Копия Signal для обработчика: state переживает кадры.
-        let mut state = use_context::<Signal<AppState>>();
-        use_tray_menu_event_handler(move |event: &MenuEvent| {
-            if event.id == "open" {
-                let desktop = dioxus::desktop::window();
-                desktop.window.set_visible(true);
-                desktop.window.set_focus();
-            } else if event.id == "quit" {
-                // Graceful shutdown: живая сессия финализируется честно
-                // (end_status=interrupted, flush, checkpoint), затем выход.
-                let mut s = state.write();
-                let _ = s.app.finalize_running(SessionEndStatus::Interrupted);
-                std::process::exit(0);
+        // Обработчик меню: прямая подписка на MenuEvent (глобальный
+        // канал tray-icon) — без dioxus-хуков, hook-в-hook невозможен
+        // (регрессия 2026-11-17). Signal не Send — стейт из потока не
+        // трогаем: «open» работает с окном напрямую, «quit» взводит
+        // тот же флаг, что SIGTERM — фоновый цикл app_shell делает
+        // graceful shutdown (финализация сессии, flush, checkpoint).
+        let rx = MenuEvent::receiver().clone();
+        std::thread::spawn(move || {
+            while let Ok(event) = rx.recv() {
+                if event.id == "open" {
+                    let desktop = dioxus::desktop::window();
+                    desktop.window.set_visible(true);
+                    desktop.window.set_focus();
+                } else if event.id == "quit" {
+                    crate::platform::tray::request_shutdown();
+                }
             }
         });
     });
@@ -338,6 +360,7 @@ fn nav_button(label: &'static str, target: Screen, active: bool) -> Element {
                         Screen::History => { let _ = s.app.reload_history(); }
                         Screen::ProbeCatchup => { let _ = crate::state::probes_flow::reload_catchable(&mut s.app); }
                         Screen::Tools => { let _ = crate::state::probes_flow::reload_ffqm(&mut s.app); }
+                        Screen::Analytics => { let _ = s.app.reload_analytics(); }
                         _ => {}
                     }
                     s.app.screen = target.clone();

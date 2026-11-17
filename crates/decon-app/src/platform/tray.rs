@@ -47,6 +47,24 @@ pub fn shutdown_requested() -> bool {
     }
 }
 
+/// Запросить graceful shutdown из UI (меню трея «Выход»): взводит тот
+/// же флаг, что и SIGTERM — фоновый цикл app_shell финализирует живую
+/// сессию (end_status=interrupted, flush, checkpoint) и выходит.
+/// Отдельный путь (не process::exit) нужен, чтобы финализация шла в
+/// dioxus-потоке с доступом к стейту.
+pub fn request_shutdown() {
+    #[cfg(target_os = "linux")]
+    {
+        if let Some((term, _)) = FLAGS.get() {
+            term.store(true, Ordering::Relaxed);
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        std::process::exit(0);
+    }
+}
+
 /// Сбросить флаги (после обработки).
 pub fn clear_shutdown_flag() {
     #[cfg(target_os = "linux")]
@@ -83,6 +101,39 @@ pub fn tray_icon_rgba() -> Result<tray_icon::Icon, tray_icon::BadIcon> {
         }
     }
     tray_icon::Icon::from_rgba(rgba, S, S)
+}
+
+/// Доступна ли библиотека трея (Linux): libappindicator-sys паникует
+/// при её отсутствии, а паника в use_hook убивает весь UI
+/// (регрессия 2026-11-17). Зонд через dlopen — без паник.
+#[cfg(target_os = "linux")]
+pub fn appindicator_available() -> bool {
+    const CANDIDATES: [&str; 4] = [
+        "libayatana-appindicator3.so.1",
+        "libappindicator3.so.1",
+        "libayatana-appindicator3.so",
+        "libappindicator3.so",
+    ];
+    unsafe extern "C" {
+        fn dlopen(
+            filename: *const core::ffi::c_char,
+            flags: core::ffi::c_int,
+        ) -> *mut core::ffi::c_void;
+        fn dlclose(handle: *mut core::ffi::c_void) -> core::ffi::c_int;
+    }
+    for lib in CANDIDATES {
+        if let Ok(c) = std::ffi::CString::new(lib) {
+            // RTLD_LAZY | RTLD_LOCAL (glibc): только проверить наличие
+            unsafe {
+                let handle = dlopen(c.as_ptr(), 2);
+                if !handle.is_null() {
+                    dlclose(handle);
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 #[cfg(test)]

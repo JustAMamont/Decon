@@ -307,6 +307,20 @@
    ✅ `ab_low_sample_warning_visible` (числа выводятся вместе с
    предупреждением, не вместо) + плашка в `views/analytics.rs`.
 
+Пост-приёмка (2026-11-17, скриншот пилота): пустой экран «Encountered
+panic: Any { .. }» — две причины, обе закрыты:
+1) трей S2.5: `init_tray_icon` паникует без libayatana-appindicator
+   (минимальные Linux), а `use_context`/`use_tray_menu_event_handler`
+   внутри `use_hook`-замыкания давали «hook inside a hook» — Linux-билд
+   UI никогда не запускался живьём. Фикс: dlopen-зонд перед init (трей
+   опционален), контекст до hook, обработчик меню через поток
+   MenuEvent::receiver + request_shutdown() через SIGTERM-флаг;
+2) analytics: `expect()` в SQL-обвязке + `signal.set()` во время рендера.
+   Фикс: collect_snapshot → Result, снимок в App::analytics, сборка в
+   навигации (паттерн reload_*), экран только читает.
+Живая верификация: Xvfb + x11grab + XTEST-клики (scripts/), экран
+аналитики отрендерен с данными и предупреждением n<30, 0 паник.
+
 Реализовано в S4: `analysis/` в decon-core — `trends.rs` (SMA + сегменты
 по версиям формулировок), `correlation.rs` (Спирмен с усреднением ties,
 Пирсон, буферы без аллокаций), `delta.rs` (pre/post дельты,

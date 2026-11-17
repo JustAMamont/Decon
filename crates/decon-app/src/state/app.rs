@@ -234,6 +234,12 @@ pub struct App {
     pub trainer_seed: u64,
     /// Результат последнего завершённого прогона (тост на экране).
     pub trainer_summary: Option<String>,
+
+    // --- Аналитика (S4)
+    /// Снимок данных аналитики; `None` — ещё не собирали (экран не
+    /// открывали) или последняя сборка не удалась (экран покажет
+    /// пустые состояния, не паникуя — правило №1.5).
+    pub analytics: Option<crate::views::analytics::AnalyticsSnapshot>,
 }
 
 impl App {
@@ -316,6 +322,7 @@ impl App {
             active_trainer: None,
             trainer_seed: 0,
             trainer_summary: None,
+            analytics: None,
             keyring_backend: KeyringBackend::Memory,
         }
     }
@@ -545,6 +552,15 @@ impl App {
         self.history = SessionRepo::new(&self.conn)
             .list_recent(50)
             .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Пересобрать снимок аналитики (при входе на экран аналитики и по
+    /// кнопке «Обновить»). Ошибка сборки не паникует: экран остаётся с
+    /// прежним снимком (`None` на первый вход — с пустыми состояниями),
+    /// текст ошибки уходит в `self.error` вызывающим.
+    pub fn reload_analytics(&mut self) -> Result<(), String> {
+        self.analytics = Some(crate::views::analytics::collect_snapshot(&self.conn)?);
         Ok(())
     }
 

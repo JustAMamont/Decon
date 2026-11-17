@@ -8,14 +8,14 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-decon-core.workspace = true
 serde.workspace = true
-serde_json.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true
+decon-core.workspace = true
 proptest.workspace = true
+serde_json.workspace = true
 uuid.workspace = true
 
 [[bench]]
