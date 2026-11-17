@@ -46,22 +46,25 @@ button:disabled { opacity: 0.45; cursor: default; }
 button.primary { background: #2f6f4f; border-color: #3d8a63; }
 button.primary:hover { background: #35805a; }
 button.danger { background: #6b3040; border-color: #8a3d52; }
-button.marker {
-    display: block;
-    width: 100%;
-    text-align: left;
-    padding: 14px 16px;
-    margin: 8px 0;
-    font-size: 15px;
-}
 .timer {
     font-size: 44px;
     font-variant-numeric: tabular-nums;
     text-align: center;
-    margin: 18px 0 8px;
+    margin: 18vh 0 8px;
     color: #eef1f5;
 }
 .signal-hint { text-align: center; color: #7d8590; font-size: 13px; margin-bottom: 14px; }
+/* Управление сессией — приглушённые кнопки внизу экрана: доступны,
+ * но не тянут взгляд (ноль интерактива в практике дКВ). */
+.session-controls {
+    position: fixed;
+    bottom: 16px;
+    left: 0;
+    right: 0;
+    text-align: center;
+}
+.session-controls button { opacity: 0.35; transition: opacity 0.25s; }
+.session-controls button:hover { opacity: 1; }
 .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 label { display: block; margin: 10px 0 4px; color: #aab2bd; font-size: 14px; }
 input[type=text], input[type=number], textarea {
@@ -199,8 +202,14 @@ fn app_shell() -> Element {
                 let _ = app.tick_running();
             }
 
-            // Зонды: показать due (уведомление + звук, окно не трогаем)
-            if app.settings.probe.enabled && !matches!(app.screen, Screen::Probe(_)) {
+            // Зонды: показать due (уведомление + звук, окно не трогаем).
+            // Правило №9: во время живой практики — тишина, ни уведомлений,
+            // ни звука (вмешательство разрушает состояние); зонд остаётся
+            // непоказанным и сработает после завершения сессии (догоняющий
+            // режим S2), либо ответится из списка зондов.
+            let in_practice = app.running.is_some();
+            if app.settings.probe.enabled && !in_practice && !matches!(app.screen, Screen::Probe(_))
+            {
                 let due = crate::state::probes_flow::due_probes(app);
                 if let Some(first) = due.first() {
                     let id = first.id;
@@ -228,7 +237,7 @@ fn app_shell() -> Element {
                         play_alert_sound(app);
                     }
                 }
-            } else if app.settings.probe.enabled {
+            } else if app.settings.probe.enabled && !in_practice {
                 // Зонд открыт на экране — повторов не нужно, но expire
                 // прошлых дней живёт (recovery-чистка без оповещений)
                 let _ = crate::state::probes_flow::expire_old_probes(app);
@@ -293,21 +302,54 @@ fn play_alert_sound(app: &crate::state::app::App) {
 /// монтировании app_shell, не на каждом рендере — иначе плодятся дубли
 /// иконки и обработчиков.
 ///
-/// Регрессия 2026-11-17 (пустой экран «Encountered panic: Any { .. }»):
-/// внутри `use_hook`-замыкания вызывались `use_context` и
-/// `use_tray_menu_event_handler` — оба сами hooks, hook-в-hook
-/// паниковал «The hook list is already borrowed» (Linux, dioxus 0.7).
-/// Плюс `init_tray_icon` паникует без libappindicator. Оба вызова
-/// вынесены: контекст берётся до hook, обработчик меню — через
-/// `MenuEvent`-подписку tray-icon без dioxus-hooks.
+/// История регрессий трея:
+/// - 2026-11-17 (утро): `use_context`/`use_tray_menu_event_handler`
+///   внутри `use_hook`-замыкания — hook-in-hook паника. Тогда хук
+///   заменили на поток с `MenuEvent::receiver()` — и сломали вторым
+///   способом.
+/// - 2026-11-17 (день): поток с receiver() мёртв по дизайну dioxus
+///   0.7: при старте dioxus ставит свой глобальный хендлер
+///   (`MenuEvent::set_event_handler` в `App::set_tray_icon_receiver`),
+///   после чего `receiver()` инертен — события уходят в tao event loop
+///   как `UserWindowEvent::TrayMenuEvent`. Плюс `dioxus::desktop::
+///   window()` = `consume_context()` паникует вне dioxus-скоупа, т.е.
+///   даже получив событие, поток умирал бы паникой на первом «Открыть».
+///   Итог: оба пункта меню не работали никогда.
+///
+/// Правильно (так и сделано): хук `use_tray_menu_event_handler` на
+/// верхнем уровне компонента `use_tray` — dioxus сам доставляет
+/// `TrayMenuEvent` в замыкание в потоке event loop, где `window()`
+/// легален. Иконка — через `use_hook` (без hook-вызовов внутри).
 fn use_tray() {
     // Hook-вызовы — только здесь, на верхнем уровне компонента:
-    // сначала контекст, потом use_hook с чистым замыканием.
+    // сначала контекст, потом хук событий меню, и лишь затем use_hook
+    // с чистым замыканием (регистрация иконки). Порядок фиксирован:
+    // нарушение = hook-in-hook паника «The hook list is already
+    // borrowed» (урок S4).
     let _state = use_context::<Signal<AppState>>();
+
+    // Обработчик меню: «open» — показать и поднять окно (легально:
+    // замыкание исполняется в потоке event loop, dioxus-скоуп активен);
+    // «quit» — взвести SIGTERM-флаг: фоновый цикл app_shell финализирует
+    // живую сессию (interrupted, flush, checkpoint) и выходит. Прямой
+    // process::exit из меню запрещён — потеряли бы стрим-флаш.
+    use dioxus::desktop::use_tray_menu_event_handler;
+    use_tray_menu_event_handler(|event| {
+        let desktop = dioxus::desktop::window();
+        match event.id().as_ref() {
+            "open" => {
+                desktop.window.set_visible(true);
+                desktop.window.set_focus();
+            }
+            "quit" => crate::platform::tray::request_shutdown(),
+            _ => {}
+        }
+    });
+
     use_hook(move || {
         use dioxus::desktop::muda::accelerator::Accelerator;
         use dioxus::desktop::trayicon::init_tray_icon;
-        use tray_icon::menu::{Menu, MenuEvent, MenuItem};
+        use tray_icon::menu::{Menu, MenuItem};
 
         // Трей опционален: на минимальных Linux без
         // libayatana-appindicator init_tray_icon паникует
@@ -324,25 +366,6 @@ fn use_tray() {
         let _ = menu.append_items(&[&open, &quit]);
         let icon = crate::platform::tray::tray_icon_rgba().ok();
         let _ = init_tray_icon(menu, icon);
-
-        // Обработчик меню: прямая подписка на MenuEvent (глобальный
-        // канал tray-icon) — без dioxus-хуков, hook-в-hook невозможен
-        // (регрессия 2026-11-17). Signal не Send — стейт из потока не
-        // трогаем: «open» работает с окном напрямую, «quit» взводит
-        // тот же флаг, что SIGTERM — фоновый цикл app_shell делает
-        // graceful shutdown (финализация сессии, flush, checkpoint).
-        let rx = MenuEvent::receiver().clone();
-        std::thread::spawn(move || {
-            while let Ok(event) = rx.recv() {
-                if event.id == "open" {
-                    let desktop = dioxus::desktop::window();
-                    desktop.window.set_visible(true);
-                    desktop.window.set_focus();
-                } else if event.id == "quit" {
-                    crate::platform::tray::request_shutdown();
-                }
-            }
-        });
     });
 }
 

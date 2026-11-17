@@ -108,11 +108,6 @@ impl RunningSession {
         false
     }
 
-    /// Событие от кнопки-маркера.
-    pub fn mark(&mut self, kind: EventKind) {
-        let _ = self.journal.append(self.elapsed_ms as i64, kind);
-    }
-
     /// Стрим-флаш (S2.5): записать накопленный буфер событий в БД, не
     /// останавливая сессию. Арена не копится в ОЗУ дольше интервала
     /// флаша; при краше теряется максимум интервал (а не вся сессия).
@@ -225,6 +220,9 @@ pub struct App {
     pub reminder_interval: String,
     /// Где реально лежит ключ (для статуса в настройках).
     pub keyring_backend: KeyringBackend,
+    /// Фактический путь к файлу БД (показывается в настройках; после
+    /// портабельной миграции — data/decon.db рядом с exe).
+    pub db_path: std::path::PathBuf,
     /// Автозапуск фактически зарегистрирован в ОС (кэш, S2.5).
     pub autostart_actual: bool,
     // --- Тренажёры (S3)
@@ -243,13 +241,14 @@ pub struct App {
 }
 
 impl App {
-    /// Инициализация: открыть БД в XDG-каталоге, мигрировать, посеять
-    /// шкалы, загрузить настройки и ключ. Ключ auto-режима — в ОЗУ на
-    /// время сессии (keyring-интеграция — S2, пока ключ в БД не хранится:
-    /// для пилота генерируется новый при каждом запуске, что делает старые
-    /// заметки нечитаемыми — потому заметки в UI S1 отключены до keyring).
+    /// Инициализация: открыть БД в каталоге данных, мигрировать,
+    /// посеять шкалы, загрузить настройки и ключ. Ключ auto-режима — в
+    /// ОЗУ на время сессии (keyring-интеграция — S2, пока ключ в БД не
+    /// хранится: для пилота генерируется новый при каждом запуске, что
+    /// делает старые заметки нечитаемыми — потому заметки в UI S1
+    /// отключены до keyring).
     pub fn init() -> Result<Self, String> {
-        let db_path = data_dir().join("decon.db");
+        let db_path = db_path_with_migration()?;
         if let Some(parent) = db_path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
@@ -268,6 +267,7 @@ impl App {
 
         let mut app = App::skeleton(conn, settings, note_crypto);
         app.keyring_backend = keyring_backend;
+        app.db_path = db_path;
         // Recovery-проход (S2.5): висящие после сбоя сессии → interrupted
         let _ = SessionRepo::new(&app.conn).finalize_dangling(&now_iso());
         // Зонды на сегодня строим сразу (если включены)
@@ -324,6 +324,7 @@ impl App {
             trainer_summary: None,
             analytics: None,
             keyring_backend: KeyringBackend::Memory,
+            db_path: std::path::PathBuf::new(),
         }
     }
 
@@ -570,9 +571,87 @@ impl App {
     }
 }
 
-/// Каталог данных приложения: XDG_DATA_HOME/decon (Linux) или
-/// %APPDATA%\decon (Windows).
+/// Каталог данных приложения (портабельный режим): `data/` рядом с
+/// исполняемым файлом. Приложение живёт в одной папке проекта — база,
+/// WAL и всё пользовательское внутри неё, ничего не раскидывается по
+/// системе. Fallback при неопределимом exe-пути — старое XDG-поведение.
 fn data_dir() -> std::path::PathBuf {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            return dir.join("data");
+        }
+    }
+    if cfg!(target_os = "windows") {
+        let appdata = std::env::var("APPDATA").unwrap_or_default();
+        if !appdata.is_empty() {
+            return std::path::PathBuf::from(appdata).join("decon");
+        }
+    }
+    let xdg = std::env::var("XDG_DATA_HOME").unwrap_or_default();
+    if !xdg.is_empty() {
+        return std::path::PathBuf::from(xdg).join("decon");
+    }
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    std::path::PathBuf::from(home)
+        .join(".local")
+        .join("share")
+        .join("decon")
+}
+
+/// Путь к БД с одноразовой миграцией старых данных: если в `data/`
+/// базы ещё нет, а в системном каталоге (XDG_DATA_HOME/decon на Linux,
+/// %APPDATA%\decon на Windows) — есть, переносим её целиком вместе с
+/// WAL/SHM-файлами. Ничего не удаляем: после копирования старый файл
+/// прячется в decon.db.migrated (переименование, не удаление —
+/// пользователь может откатиться). Идемпотентно: при живой базе в
+/// `data/` ничего не делает.
+fn db_path_with_migration() -> Result<std::path::PathBuf, String> {
+    migrate_db_into(&data_dir(), &legacy_data_dir())
+}
+
+/// Ядро миграции (параметризовано для тестов): перенести БД из
+/// `legacy_dir` в `new_dir`, если там её ещё нет. См. db_path_with_migration.
+fn migrate_db_into(
+    new_dir: &std::path::Path,
+    legacy_dir: &std::path::Path,
+) -> Result<std::path::PathBuf, String> {
+    let new_db = new_dir.join("decon.db");
+    if new_db.exists() {
+        return Ok(new_db);
+    }
+    let legacy_db = legacy_dir.join("decon.db");
+    if !legacy_db.exists() {
+        return Ok(new_db);
+    }
+    // Перенос: БД + WAL + SHM (живая база SQLite — это три файла).
+    std::fs::create_dir_all(new_dir).map_err(|e| e.to_string())?;
+    for suffix in ["", "-wal", "-shm"] {
+        let from = legacy_dir.join(format!("decon.db{suffix}"));
+        if from.exists() {
+            let to = new_dir.join(format!("decon.db{suffix}"));
+            if !to.exists() {
+                std::fs::copy(&from, &to).map_err(|e| e.to_string())?;
+            }
+        }
+    }
+    // Старую базу прячем с суффиксом .migrated — данные сохранены,
+    // но повторная миграция (после чистки data/) её не найдёт.
+    let retired = legacy_dir.join("decon.db.migrated");
+    if !retired.exists() {
+        std::fs::rename(&legacy_db, &retired).map_err(|e| e.to_string())?;
+    }
+    for suffix in ["-wal", "-shm"] {
+        let from = legacy_dir.join(format!("decon.db{suffix}"));
+        if from.exists() {
+            let _ = std::fs::remove_file(&from);
+        }
+    }
+    Ok(new_db)
+}
+
+/// Системный каталог данных (старое поведение до портабельного
+/// режима): XDG_DATA_HOME/decon или %APPDATA%\decon.
+fn legacy_data_dir() -> std::path::PathBuf {
     if cfg!(target_os = "windows") {
         let appdata = std::env::var("APPDATA").unwrap_or_default();
         if !appdata.is_empty() {
@@ -608,15 +687,57 @@ mod tests {
         assert!(r.tick(50_000), "вторая минута");
         assert_eq!(r.journal.pending(), 2);
 
-        r.mark(EventKind::ClarityFlash);
-        assert_eq!(r.journal.pending(), 3);
+        // Ноль интерактива в практике (методика дКВ): между стартом и
+        // стопом в журнал пишутся только равномерные сигналы — никаких
+        // событий-отметок от пользователя.
         assert_eq!(r.elapsed_ms, 120_000);
+        let batch = r.journal.take_batch();
+        assert!(batch.iter().all(|e| e.kind == EventKind::Signal));
     }
 
     #[test]
-    fn data_dir_prefers_xdg() {
-        // Не мутируем окружение процесса в тестах — проверяем только
-        // fallback-логику чистой функцией.
-        assert!(data_dir().ends_with("decon"));
+    fn data_dir_prefers_portable() {
+        // Портабельный режим: data/ рядом с исполняемым файлом (тестовый
+        // бинарник лежит в target/debug — data_dir указывает туда же).
+        let dir = data_dir();
+        assert!(dir.ends_with("data"), "портабельный data/: {dir:?}");
+    }
+
+    #[test]
+    fn db_migration_moves_legacy_db() {
+        // Миграция: старая база из legacy-каталога переезжает в data/,
+        // старый файл прячется в decon.db.migrated, повторная миграция
+        // — no-op (данные в data/ не трогаются).
+        let tmp = std::env::temp_dir().join(format!("decon-mig-test-{}", std::process::id()));
+        let new_dir = tmp.join("data");
+        let legacy = tmp.join("legacy");
+        std::fs::create_dir_all(&new_dir).unwrap();
+        std::fs::create_dir_all(&legacy).unwrap();
+        // Фальшивая база с маркером внутри
+        std::fs::write(legacy.join("decon.db"), b"sqlite-test-marker").unwrap();
+
+        let p = migrate_db_into(&new_dir, &legacy).unwrap();
+        assert!(p.exists(), "база переехала в data/");
+        assert_eq!(
+            std::fs::read(&p).unwrap(),
+            b"sqlite-test-marker",
+            "содержимое сохранено"
+        );
+        assert!(legacy.join("decon.db.migrated").exists(), "старая спрятана");
+        assert!(
+            !legacy.join("decon.db").exists(),
+            "старая больше не на месте"
+        );
+
+        // Повторная миграция — no-op: база в data/ уже есть
+        let p2 = migrate_db_into(&new_dir, &legacy).unwrap();
+        assert_eq!(p2, new_dir.join("decon.db"));
+        assert_eq!(
+            std::fs::read(&p2).unwrap(),
+            b"sqlite-test-marker",
+            "данные не тронуты повторным запуском"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }

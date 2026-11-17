@@ -49,14 +49,6 @@ pub enum Str {
     Save,
     /// «Сессия идёт»
     SessionRunning,
-    /// «Срыв в концентрацию»
-    EvCollapse,
-    /// «Уход в мысли»
-    EvSemantic,
-    /// «Уход в тело»
-    EvBody,
-    /// «Вспышка ясности»
-    EvClarity,
     /// «Пауза»
     EvPause,
     /// «Продолжить»
@@ -159,6 +151,8 @@ pub enum Str {
     ShowWindowOnStart,
     /// «Тест звука»
     TestSound,
+    /// «База данных»
+    DbPathLabel,
     /// «Сессия прервана (данные сохранены)»
     SessionInterrupted,
     // --- S3: тренажёры
@@ -294,10 +288,6 @@ impl I18n {
             Str::NoteEncrypted => "Заметка (шифруется)",
             Str::Save => "Сохранить",
             Str::SessionRunning => "Сессия идёт",
-            Str::EvCollapse => "Срыв в концентрацию",
-            Str::EvSemantic => "Уход в мысли",
-            Str::EvBody => "Уход в тело",
-            Str::EvClarity => "Вспышка ясности",
             Str::EvPause => "Пауза",
             Str::EvResume => "Продолжить",
             Str::History => "История",
@@ -349,6 +339,7 @@ impl I18n {
             Str::ReminderInterval => "Интервал повтора зондов, мин (0 — выкл)",
             Str::ShowWindowOnStart => "Показывать окно при запуске",
             Str::TestSound => "Тест звука",
+            Str::DbPathLabel => "База данных",
             Str::SessionInterrupted => "Сессия прервана (данные сохранены)",
             Str::Trainers => "Тренажёры",
             Str::SchulteTitle => "Таблицы Шульте",
@@ -419,10 +410,6 @@ impl I18n {
             Str::NoteEncrypted => "Note (encrypted)",
             Str::Save => "Save",
             Str::SessionRunning => "Session running",
-            Str::EvCollapse => "Collapse into focus",
-            Str::EvSemantic => "Drift into thoughts",
-            Str::EvBody => "Drift into body",
-            Str::EvClarity => "Clarity flash",
             Str::EvPause => "Pause",
             Str::EvResume => "Resume",
             Str::History => "History",
@@ -476,6 +463,7 @@ impl I18n {
             Str::ReminderInterval => "Probe reminder interval, min (0 — off)",
             Str::ShowWindowOnStart => "Show window on launch",
             Str::TestSound => "Test sound",
+            Str::DbPathLabel => "Database",
             Str::SessionInterrupted => "Session interrupted (data saved)",
             Str::Trainers => "Trainers",
             Str::SchulteTitle => "Schulte tables",
@@ -556,10 +544,6 @@ mod tests {
             Str::NoteEncrypted,
             Str::Save,
             Str::SessionRunning,
-            Str::EvCollapse,
-            Str::EvSemantic,
-            Str::EvBody,
-            Str::EvClarity,
             Str::EvPause,
             Str::EvResume,
             Str::History,

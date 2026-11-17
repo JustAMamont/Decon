@@ -215,7 +215,7 @@ CREATE TABLE schema_version (
 | `session.signal_interval_s` | `300` — интервал равномерных сигналов |
 | `i18n.lang` | `"ru"` / `"en"` |
 | `crypto.mode` | `"auto"` / `"passphrase"` |
-| `events.custom_kinds` | JSON-массив пользовательских кнопок-маркеров |
+| `events.custom_kinds` | (устарело) JSON-массив пользовательских кнопок-маркеров; кнопки-маркеры удалены из практики (ARCHITECTURE.md §4.1: ноль интерактива во время сессии), ключ не читается и вперёд не развивается |
 | `residency.autostart` | `true` — запускаться с системой (XDG / HKCU Run) |
 | `residency.sound` | `"off"` / `"chime"` / `"bell"` — звук оповещений |
 | `residency.reminder_interval_min` | `15` — повтор-«будильник» неотвеченного зонда (0 — выкл) |

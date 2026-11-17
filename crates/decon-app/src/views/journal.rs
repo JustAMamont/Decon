@@ -4,7 +4,6 @@
 use crate::i18n::{I18n, Str};
 use crate::state::app::Screen;
 use crate::views::AppState;
-use decon_core::model::event::EventKind;
 use decon_core::model::session::Layer;
 use dioxus::prelude::*;
 
@@ -151,23 +150,15 @@ pub fn running_screen() -> Element {
         div {
             div { class: "timer", "{mins:02}:{secs:02}" }
             div { class: "signal-hint", {i18n.get(Str::SessionRunning)} }
-            for (kind, label) in [
-                (EventKind::CollapseFocus, Str::EvCollapse),
-                (EventKind::DriftSemantic, Str::EvSemantic),
-                (EventKind::DriftBody, Str::EvBody),
-                (EventKind::ClarityFlash, Str::EvClarity),
-            ] {
-                button {
-                    class: "marker",
-                    onclick: move |_| {
-                        if let Some(r) = state.write().app.running.as_mut() {
-                            r.mark(kind);
-                        }
-                    },
-                    {i18n.get(label)}
-                }
-            }
-            div { style: "margin-top:18px;",
+            // Ноль интерактива в практике (методика дКВ, Бахтияров §1.4:
+            // перемещение взора и действия «разрушают дКВ»; замер —
+            // только pre/post, ретроспективно). Никаких кнопок-маркеров
+            // и клавиатурных отметок: срыв в концентрацию замечается и
+            // растворяется в фоне, а не фиксируется нажатием.
+            // Управление сессией (Стоп/Прервать) — приглушённые кнопки
+            // внизу, вне фокуса взгляда: нажимаются, когда решение о
+            // завершении уже принято.
+            div { class: "session-controls",
                 button {
                     class: "danger",
                     onclick: move |_| {

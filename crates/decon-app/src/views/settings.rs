@@ -34,6 +34,7 @@ pub fn settings_screen() -> Element {
         KeyringBackend::OsKeyring => i18n.get(Str::KeyringOs),
         KeyringBackend::Memory => i18n.get(Str::KeyringMemory),
     };
+    let db_path = state.read().app.db_path.display().to_string();
     let probes_label = format!(
         "{}: {}",
         i18n.get(Str::ProbesEnabled),
@@ -194,6 +195,11 @@ pub fn settings_screen() -> Element {
             // --- Статус keyring
             div { style: "color:#7d8590; font-size:13px; margin-top: 14px;",
                 "🔑 {i18n.get(Str::KeyringStatus)}: {keyring_label}"
+            }
+
+            // --- Путь к БД (портабельный режим: data/ рядом с exe)
+            div { style: "color:#7d8590; font-size:13px; margin-top: 6px; word-break: break-all;",
+                "💾 {i18n.get(Str::DbPathLabel)}: {db_path}"
             }
 
             // --- Язык
