@@ -1,0 +1,33 @@
+[package]
+name = "decon-core"
+description = "Decon domain core: model, storage, analysis (UI-free)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+rusqlite.workspace = true
+thiserror.workspace = true
+rand.workspace = true
+fernet.workspace = true
+argon2.workspace = true
+rand_core.workspace = true
+base64.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+proptest.workspace = true
+tempfile = "3"
+
+[[bench]]
+name = "journal"
+harness = false
+
+[[bench]]
+name = "analysis"
+harness = false

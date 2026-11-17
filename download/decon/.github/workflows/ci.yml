@@ -1,0 +1,97 @@
+name: CI
+
+# Экономный режим (CONVENTIONS.md, правило №8.9): Actions только на границах
+# скоупов. Обычные пуши не запускают CI — полный прогон делает разработчик
+# локально (fmt + clippy + test + gitleaks). Запуск:
+#   - вручную (Actions → Run workflow);
+#   - тег границ скоупа: git tag scope-S1 && git push origin scope-S1.
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "scope-*"
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  lint:
+    name: Format & Clippy (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: rustfmt
+        run: cargo fmt --all --check
+      - name: Install Linux desktop dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  test:
+    name: Tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Linux desktop dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libxdo-dev
+      - name: Run tests
+        run: cargo test --workspace --all-features
+      - name: Doc tests and docs
+        run: cargo doc --workspace --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  bench-smoke:
+    name: Benchmark smoke (ubuntu-latest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Smoke-режим: быстрая проверка, что бенчи живы и бюджеты аллокаций
+      # не превышены (CONVENTIONS.md, правило 3.4). Полное сравнение с
+      # main — локально перед мержем hot-path PR. Указываем bench-таргеты
+      # явно: `cargo bench -p crate` прогоняет и lib-тесты, которые не
+      # понимают флаги criterion. Новый бенч — добавить сюда же.
+      - name: Run benchmarks (smoke)
+        run: |
+          cargo bench --bench journal --package decon-core -- --warm-up-time 1 --measurement-time 1
+          cargo bench --bench mot --package decon-trainers -- --warm-up-time 1 --measurement-time 1
+          cargo bench --bench analysis --package decon-core -- --warm-up-time 1 --measurement-time 1
+
+  gitleaks:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # gitleaks-action@v2 падает на свежих git ("stderr is not empty");
+      # используем официальный бинарник напрямую с тем же результатом.
+      - name: Install gitleaks
+        run: |
+          VERSION=8.30.1
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${VERSION}/gitleaks_${VERSION}_linux_x64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin gitleaks
+      - name: Scan for secrets
+        run: gitleaks detect --source . --redact --exit-code 1

@@ -1,0 +1,33 @@
+[package]
+name = "decon-app"
+description = "Decon desktop application (Dioxus UI)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "decon"
+path = "src/main.rs"
+
+[dependencies]
+decon-core.workspace = true
+# S3: экраны тренажёров (Шульте, MOT) поверх движков decon-trainers.
+decon-trainers.workspace = true
+dioxus = { version = "0.7", features = ["desktop"] }
+serde_json.workspace = true
+# Прямые зависимости app-слоя (не через core): подключение к БД и UUID
+# в состоянии приложения.
+rusqlite.workspace = true
+uuid.workspace = true
+tokio = { version = "1", features = ["time"] }
+keyring = { version = "3.6.3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+notify-rust = "4.17.0"
+# S2.5: сигналы ОС (SIGTERM/SIGINT) для graceful shutdown; tray-icon —
+# тот же крейт и версия, что в dioxus-desktop (единая реализация трея).
+signal-hook = "0.3"
+tray-icon = { version = "0.21", default-features = false }
+
+[dev-dependencies]
+tempfile = "3"
